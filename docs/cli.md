@@ -32,7 +32,12 @@ termreel record <scenario.yaml> [options]
 - `--backend <auto|tmux|pty>`: PTY backend (default: auto).
 - `--cast <path>`: Export Asciinema v2 `.cast` log.
 - `--poster <path>`: Export PNG poster thumbnail.
+- `-c, --continue, --resume`: Resume latest conversation/session in the workspace.
+- `--conversation <id>`: Resume a specific previous conversation by ID.
+- `--workspace <path>`: Attach to an existing workspace directory.
+- `--preserve-workspace`: Keep temporary workspace directory intact after recording.
 - `-q, --quiet`: Suppress verbose logging.
+
 
 ### `termreel exec`
 ```bash

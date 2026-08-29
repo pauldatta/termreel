@@ -75,3 +75,30 @@ AI agents take variable time to stream tokens and invoke tools. Rather than gues
     timeout: 45.0
     reading_pause: 3.0   # Pause after generation finishes so the audience can read
 ```
+
+---
+
+## 4. Session Resumption & Multi-Stage Checkpointing
+
+When recording agents across multi-stage workflows or resuming after previous steps:
+
+```yaml
+version: "1.0"
+environment:
+  resume: true                                # Automatically passes -c / --continue to agy
+  conversation_id: "conv-abcdef-123456"       # Or resume a specific conversation ID
+  workspace_path: "/tmp/termreel_ws_staging"  # Attach to existing workspace
+  preserve_workspace: true                    # Preserve workspace for subsequent recordings
+
+timeline:
+  - launch:
+      command: "agy"
+      resume: true
+  - type:
+      text: "Now implement unit tests in test_calculator.py and run pytest"
+      send_key: "Enter"
+  - wait_for_idle:
+      timeout: 45.0
+      reading_pause: 2.0
+```
+

@@ -26,9 +26,13 @@ metadata:
 environment:
   create_temp_workspace: true
   temp_workspace_prefix: "termreel_ws_"
+  resume: false                 # Auto-resume latest conversation in workspace
+  conversation_id: null         # Or specify exact conversation ID
+  preserve_workspace: false     # Keep workspace for subsequent scenario runs
   setup_commands:
     - "git init"
     - "echo 'hello' > app.py"
+
 
 permissions:
   auto_approve: true

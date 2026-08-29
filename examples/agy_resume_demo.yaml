@@ -1,0 +1,72 @@
+version: "1.0"
+
+metadata:
+  title: "Antigravity Agent - Session Resumption"
+  subtitle: "Resuming Previous Conversation Turn via -c"
+  output: "output/agy_resume_demo.mp4"
+  poster_output: "output/agy_resume_demo_poster.png"
+  cast_output: "output/agy_resume_demo.cast"
+  resolution: [1280, 720]
+  fps: 30
+  theme: "catppuccin-mocha"
+  statusbar_left: "Antigravity CLI | Resumed Session"
+  statusbar_right: "TermReel HD"
+
+environment:
+  create_temp_workspace: true
+  temp_workspace_prefix: "termreel_agy_resume_"
+  auto_trust: true
+  preserve_workspace: true
+  resume: true
+  setup_commands:
+    - "git init"
+    - "git config user.name 'Paul Datta'"
+    - "git config user.email 'pkdatta2000@gmail.com'"
+    - "echo 'def run(): return 42' > service.py"
+    - "git add service.py && git commit -m 'Initial service setup'"
+
+permissions:
+  auto_approve: true
+  allow_commands: ["python3", "pytest", "git"]
+  allow_tools: ["run_command", "write_to_file", "read_file"]
+
+triggers:
+  - on_match: "Do you trust the contents of this project\\?|Yes, I trust"
+    action: "Enter"
+    once: true
+
+timeline:
+  - show_card:
+      tag: "Phase 2"
+      title: "Resuming Previous Session"
+      desc: "Attaching to existing agent conversation turn without restarting"
+      duration: 2.5
+
+  - launch:
+      command: "agy"
+      resume: true
+      wait_for_idle: true
+      timeout: 20.0
+
+  - type:
+      text: "Add error handling and comprehensive docstrings to service.py"
+      speed: 0.035
+      send_key: "Enter"
+
+  - wait_for_idle:
+      timeout: 45.0
+      reading_pause: 2.5
+
+  - type:
+      text: "/exit"
+      send_key: "Enter"
+      pause: 1.0
+
+  - run_shell:
+      command: "git diff"
+      pause: 2.0
+
+  - show_card:
+      tag: "Complete"
+      title: "Session Resumption Completed"
+      duration: 1.5
