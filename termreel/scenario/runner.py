@@ -19,7 +19,14 @@ from termreel.supervisor.tmux_session import TmuxSupervisor
 from termreel.renderer.cairo_renderer import CairoTerminalRenderer
 from termreel.transcoder.ffmpeg_pipe import FFmpegPipe
 from termreel.transcoder.gif_encoder import GifEncoder
-from termreel.reactor.triggers import Trigger, TriggerAction, ActionType, create_trust_dialog_trigger
+from termreel.reactor.triggers import (
+    Trigger,
+    TriggerAction,
+    ActionType,
+    create_trust_dialog_trigger,
+    create_agy_permission_dialog_trigger,
+    create_yes_no_prompt_trigger,
+)
 from termreel.reactor.monitor import ScreenMonitor
 from termreel.utils.keystrokes import KeystrokeGenerator, KeyMap
 from termreel.utils.redaction import Redactor
@@ -151,34 +158,47 @@ class ScenarioRunner:
             print(f"[termreel] {msg}")
 
     @staticmethod
-    def _parse_trigger_action(action_val: Any) -> Union[TriggerAction, List[TriggerAction], str]:
+    def _parse_trigger_action(
+        action_val: Any,
+        delay_before: float = 0.0,
+        delay_after: float = 0.3,
+    ) -> Union[TriggerAction, List[TriggerAction], str]:
         if isinstance(action_val, list):
             acts = []
             for item in action_val:
                 if isinstance(item, dict):
-                    act_type = ActionType(item.get("type", "send_key"))
-                    val = item.get("value") or item.get("send_key") or item.get("key") or "Enter"
-                    delay = float(item.get("delay", item.get("delay_after", 0.3)))
-                    acts.append(TriggerAction(action_type=act_type, value=val, delay_after=delay))
+                    act_type_str = item.get("type", "send_key")
+                    act_type = ActionType(act_type_str)
+                    val = item.get("value") or item.get("send_key") or item.get("key") or item.get("choice") or "Enter"
+                    d_after = float(item.get("delay", item.get("delay_after", delay_after)))
+                    d_before = float(item.get("delay_before", delay_before))
+                    acts.append(TriggerAction(action_type=act_type, value=val, delay_before=d_before, delay_after=d_after))
                 elif isinstance(item, TriggerAction):
                     acts.append(item)
                 else:
                     acts.append(str(item))
             return acts
         elif isinstance(action_val, dict):
-            act_type = ActionType(action_val.get("type", "send_key"))
-            val = action_val.get("value") or action_val.get("send_key") or action_val.get("key") or "Enter"
-            delay = float(action_val.get("delay", action_val.get("delay_after", 0.3)))
-            return TriggerAction(action_type=act_type, value=val, delay_after=delay)
+            act_type_str = action_val.get("type", "send_key")
+            act_type = ActionType(act_type_str)
+            val = action_val.get("value") or action_val.get("send_key") or action_val.get("key") or action_val.get("choice") or "Enter"
+            d_after = float(action_val.get("delay", action_val.get("delay_after", delay_after)))
+            d_before = float(action_val.get("delay_before", delay_before))
+            return TriggerAction(action_type=act_type, value=val, delay_before=d_before, delay_after=d_after)
         elif isinstance(action_val, TriggerAction):
             return action_val
         else:
-            return str(action_val)
+            return TriggerAction(
+                action_type=ActionType.SEND_KEY,
+                value=str(action_val),
+                delay_before=delay_before,
+                delay_after=delay_after,
+            )
 
     def _init_triggers(self):
         """Convert manifest trigger configs into active Trigger instances."""
         for tc in self.manifest.triggers:
-            act = self._parse_trigger_action(tc.action)
+            act = self._parse_trigger_action(tc.action, delay_before=tc.delay_before, delay_after=tc.delay_after)
             self.monitor.add_trigger(
                 Trigger(
                     pattern=tc.on_match,
@@ -193,7 +213,20 @@ class ScenarioRunner:
         if self.manifest.environment.auto_trust:
             has_trust_trigger = any("trust" in str(getattr(t, "pattern", "")).lower() for t in self.monitor.triggers)
             if not has_trust_trigger:
-                self.monitor.add_trigger(create_trust_dialog_trigger())
+                self.monitor.add_trigger(create_trust_dialog_trigger(delay_before=0.4, delay_after=0.4))
+
+        # Auto-register interactive permission dialog triggers if enabled and not already configured
+        if self.manifest.environment.auto_approve_dialogs or self.manifest.environment.agy_auto_approve:
+            has_perm_trigger = any(
+                ("permission" in str(getattr(t, "pattern", "")).lower() or "proceed" in str(getattr(t, "pattern", "")).lower())
+                for t in self.monitor.triggers
+            )
+            if not has_perm_trigger:
+                self.monitor.add_trigger(create_agy_permission_dialog_trigger(choice=1, delay_before=0.5, delay_after=0.4))
+
+            has_yes_no_trigger = any("y/n" in str(getattr(t, "pattern", "")).lower() for t in self.monitor.triggers)
+            if not has_yes_no_trigger:
+                self.monitor.add_trigger(create_yes_no_prompt_trigger(response="y", delay_before=0.4, delay_after=0.4))
 
     def _setup_environment(self):
         """Set up working directory, temporary workspace, and run setup commands."""
@@ -213,8 +246,8 @@ class ScenarioRunner:
             self._log(f"Running setup command: {cmd}")
             subprocess.run(cmd, shell=True, cwd=self._work_dir, check=True)
 
-        # Setup Antigravity lifecycle hooks if enabled
-        if self.manifest.environment.agy_hooks:
+        # Setup Antigravity lifecycle hooks & settings if enabled
+        if self.manifest.environment.agy_hooks or self.manifest.environment.permissions or self.manifest.environment.settings:
             custom_cfg = (
                 self.manifest.environment.hooks
                 if isinstance(self.manifest.environment.hooks, dict)
@@ -227,9 +260,12 @@ class ScenarioRunner:
                 log_events=self.manifest.environment.agy_event_bridge,
                 custom_policy=self.manifest.environment.agy_custom_policy,
                 custom_hooks_config=custom_cfg,
+                permissions=self.manifest.environment.permissions,
+                settings=self.manifest.environment.settings,
+                provision_settings=True,
             )
             prov = self.hook_manager.provision()
-            self._log(f"Provisioned Antigravity hooks at: {prov['hooks_json']}")
+            self._log(f"Provisioned Antigravity hooks & settings in: {self._work_dir}")
 
     def _cleanup_environment(self):
         """Run cleanup commands and delete temporary workspace if applicable."""
@@ -269,8 +305,8 @@ class ScenarioRunner:
                     else:
                         pass  # PtySupervisor updates state in real-time
 
-                    # Evaluate reactive screen triggers
-                    self.monitor.evaluate_and_react(self.supervisor)
+                    # Evaluate reactive screen triggers asynchronously without blocking frame capture
+                    self.monitor.evaluate_and_react(self.supervisor, async_action=True)
 
                 with self._lock:
                     # Apply token/secret redactions
@@ -352,6 +388,9 @@ class ScenarioRunner:
             self._is_recording = False
             if self._capture_thread:
                 self._capture_thread.join(timeout=2.0)
+
+            # Wait for any active trigger actions to complete
+            self.monitor.wait_for_actions(timeout=2.0)
 
             if self.supervisor:
                 self.supervisor.terminate()
@@ -481,8 +520,12 @@ class ScenarioRunner:
                 time.sleep(pause_after)
 
         elif st == "select_choice":
+            choice_val = params.get("choice", params.get("value"))
+            if choice_val is not None and str(choice_val).isdigit():
+                steps = max(0, int(choice_val) - 1)
+            else:
+                steps = int(params.get("steps", params.get("times", 1)))
             direction = params.get("direction", "Down")
-            steps = int(params.get("steps", params.get("times", 1)))
             confirm = bool(params.get("confirm", True))
             confirm_key = params.get("confirm_key", "Enter")
             pause_after = float(params.get("pause", 0.5))

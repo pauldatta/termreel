@@ -33,6 +33,7 @@ class ScenarioEnvironment:
     create_temp_workspace: bool = False
     temp_workspace_prefix: str = "termreel_ws_"
     auto_trust: bool = True
+    auto_approve_dialogs: bool = True
     setup_commands: List[str] = field(default_factory=list)
     cleanup_commands: List[str] = field(default_factory=list)
     hooks: Optional[Union[List[Any], Dict[str, Any]]] = None
@@ -40,6 +41,8 @@ class ScenarioEnvironment:
     agy_auto_approve: bool = True
     agy_event_bridge: bool = True
     agy_custom_policy: Dict[str, str] = field(default_factory=dict)
+    permissions: Optional[Union[List[str], Dict[str, Any]]] = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -49,6 +52,8 @@ class TriggerConfig:
     once: bool = True
     cooldown: float = 1.0
     max_firings: int = 1
+    delay_before: float = 0.0
+    delay_after: float = 0.3
 
 
 @dataclass
@@ -93,12 +98,21 @@ class ScenarioManifest:
         )
 
         env_dict = data.get("environment", {})
+        perms = env_dict.get("permissions") if "permissions" in env_dict else data.get("permissions")
+        settings_cfg = env_dict.get("settings") if "settings" in env_dict else data.get("settings")
+
+        auto_dialogs = env_dict.get(
+            "auto_approve_dialogs",
+            env_dict.get("agy_auto_approve", data.get("auto_approve_dialogs", True))
+        )
+
         environment = ScenarioEnvironment(
             cwd=env_dict.get("cwd"),
             env=env_dict.get("env", {}),
             create_temp_workspace=bool(env_dict.get("create_temp_workspace", False)),
             temp_workspace_prefix=env_dict.get("temp_workspace_prefix", "termreel_ws_"),
             auto_trust=bool(env_dict.get("auto_trust", True)),
+            auto_approve_dialogs=bool(auto_dialogs),
             setup_commands=env_dict.get("setup_commands", []),
             cleanup_commands=env_dict.get("cleanup_commands", []),
             hooks=env_dict.get("hooks"),
@@ -106,6 +120,8 @@ class ScenarioManifest:
             agy_auto_approve=bool(env_dict.get("agy_auto_approve", True)),
             agy_event_bridge=bool(env_dict.get("agy_event_bridge", True)),
             agy_custom_policy=env_dict.get("agy_custom_policy", {}),
+            permissions=perms,
+            settings=settings_cfg,
         )
 
         redactions = data.get("redactions", [])
@@ -113,16 +129,20 @@ class ScenarioManifest:
         triggers_data = data.get("triggers", [])
         triggers = []
         for t in triggers_data:
-            if isinstance(t, dict) and "on_match" in t:
-                triggers.append(
-                    TriggerConfig(
-                        on_match=t["on_match"],
-                        action=t.get("action", "Enter"),
-                        once=t.get("once", True),
-                        cooldown=float(t.get("cooldown", 1.0)),
-                        max_firings=int(t.get("max_firings", 1)),
+            if isinstance(t, dict):
+                pat = t.get("on_match") or t.get("pattern") or t.get("match")
+                if pat:
+                    triggers.append(
+                        TriggerConfig(
+                            on_match=pat,
+                            action=t.get("action", "Enter"),
+                            once=bool(t.get("once", True)),
+                            cooldown=float(t.get("cooldown", 1.0)),
+                            max_firings=int(t.get("max_firings", 1)),
+                            delay_before=float(t.get("delay_before", 0.0)),
+                            delay_after=float(t.get("delay_after", t.get("delay", 0.3))),
+                        )
                     )
-                )
 
         timeline_data = data.get("timeline", [])
         timeline = []

@@ -286,7 +286,7 @@ class TestHookScriptExecution(unittest.TestCase):
 
 
 class TestHookManager(unittest.TestCase):
-    """Test workspace provisioning and cleanup of hooks."""
+    """Test workspace provisioning and cleanup of hooks and settings."""
 
     def setUp(self):
         self.temp_ws = tempfile.mkdtemp()
@@ -300,6 +300,7 @@ class TestHookManager(unittest.TestCase):
         prov = hm.provision()
 
         self.assertTrue(os.path.exists(prov["hooks_json"]))
+        self.assertTrue(os.path.exists(prov["settings_json"]))
         self.assertTrue(os.path.exists(prov["hook_script"]))
 
         with open(prov["hooks_json"], "r", encoding="utf-8") as f:
@@ -315,25 +316,110 @@ class TestHookManager(unittest.TestCase):
         # Must NOT pollute top-level with raw event keys
         self.assertNotIn("PreToolUse", cfg.keys() - {"termreel"})
 
+        # Verify settings.json
+        with open(prov["settings_json"], "r", encoding="utf-8") as f:
+            settings_cfg = json.load(f)
+        self.assertFalse(settings_cfg["enableTerminalSandbox"])
+        self.assertIn("permissions", settings_cfg)
+        self.assertIn("command(python3)", settings_cfg["permissions"]["allow"])
+
         # Clean up
         hm.cleanup()
         self.assertFalse(os.path.exists(prov["hooks_json"]))
+        self.assertFalse(os.path.exists(prov["settings_json"]))
         self.assertFalse(os.path.exists(prov["hook_script"]))
+
+    def test_settings_backup_and_restore(self):
+        agents_dir = os.path.join(self.temp_ws, ".agents")
+        os.makedirs(agents_dir, exist_ok=True)
+        existing_settings = os.path.join(agents_dir, "settings.json")
+        with open(existing_settings, "w", encoding="utf-8") as f:
+            json.dump({"original": "keep_me"}, f)
+
+        hm = HookManager(
+            workspace_dir=self.temp_ws,
+            permissions=["command(custom_cmd)"],
+            auto_approve=True,
+        )
+        hm.provision()
+
+        # Check modified settings.json
+        with open(existing_settings, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("command(custom_cmd)", data["permissions"]["allow"])
+
+        # Cleanup should restore original
+        hm.cleanup()
+        self.assertTrue(os.path.exists(existing_settings))
+        with open(existing_settings, "r", encoding="utf-8") as f:
+            restored = json.load(f)
+        self.assertEqual(restored, {"original": "keep_me"})
+
+
+class TestSettingsPresets(unittest.TestCase):
+    """Test permission normalization and settings.json generation."""
+
+    def test_normalize_permission_string(self):
+        from termreel.hooks.presets import normalize_permission_string
+        self.assertEqual(normalize_permission_string("python3"), "command(python3)")
+        self.assertEqual(normalize_permission_string("command(git)"), "command(git)")
+        self.assertEqual(normalize_permission_string("cmd: pytest -v"), "command(pytest -v)")
+        self.assertEqual(normalize_permission_string("read_file: /tmp/foo"), "read_file(/tmp/foo)")
+        self.assertEqual(normalize_permission_string("write_file"), "write_file")
+        self.assertEqual(normalize_permission_string("run_command"), "run_command")
+        self.assertEqual(normalize_permission_string("tool: write_to_file"), "write_to_file")
+        self.assertEqual(normalize_permission_string("tool(grep_search)"), "grep_search")
+        self.assertEqual(normalize_permission_string("read_url: example.com"), "read_url(example.com)")
+        self.assertEqual(normalize_permission_string("mcp: server/*"), "mcp(server/*)")
+
+    def test_create_agy_settings_config(self):
+        from termreel.hooks.presets import create_agy_settings_config
+        cfg = create_agy_settings_config(
+            permissions={
+                "mode": "request-review",
+                "allow": ["command(custom_tool)"],
+                "allowed_commands": ["python3 app.py", "pytest"],
+                "allowed_tools": ["write_to_file", "run_command"],
+                "allowed_paths": ["/workspace/src"],
+                "allowed_urls": ["google.com"],
+                "deny": ["command(rm -rf /)"],
+            },
+            custom_settings={"model": "gemini-3.7-flash"},
+        )
+        self.assertEqual(cfg["model"], "gemini-3.7-flash")
+        self.assertFalse(cfg["enableTerminalSandbox"])
+        self.assertEqual(cfg["permissions"]["mode"], "request-review")
+        self.assertIn("command(custom_tool)", cfg["permissions"]["allow"])
+        self.assertIn("command(python3 app.py)", cfg["permissions"]["allow"])
+        self.assertIn("command(pytest)", cfg["permissions"]["allow"])
+        self.assertIn("write_to_file", cfg["permissions"]["allow"])
+        self.assertIn("run_command", cfg["permissions"]["allow"])
+        self.assertIn("read_file(/workspace/src)", cfg["permissions"]["allow"])
+        self.assertIn("read_url(google.com)", cfg["permissions"]["allow"])
+        self.assertIn("command(rm -rf /)", cfg["permissions"]["deny"])
 
 
 class TestScenarioManifestWithHooks(unittest.TestCase):
-    """Test parsing YAML scenario manifest with hooks configuration."""
+    """Test parsing YAML scenario manifest with hooks and permissions configuration."""
 
-    def test_parse_manifest_with_hooks(self):
+    def test_parse_manifest_with_hooks_and_permissions(self):
         yaml_content = """
 version: "1.0"
 metadata:
   title: "Agy Interactive Recording with Hooks"
   output: "output/agy_hooks.mp4"
 environment:
+  auto_approve_dialogs: true
   agy_hooks: true
   agy_auto_approve: true
   agy_event_bridge: true
+  permissions:
+    mode: "request-review"
+    allowed_commands:
+      - "python3"
+      - "pytest"
+  settings:
+    model: "gemini-3.7-flash"
   agy_custom_policy:
     dangerous_tool: deny
 timeline:
@@ -348,8 +434,12 @@ timeline:
         manifest = ScenarioManifest.from_yaml_str(yaml_content)
         self.assertTrue(manifest.environment.agy_hooks)
         self.assertTrue(manifest.environment.agy_auto_approve)
+        self.assertTrue(manifest.environment.auto_approve_dialogs)
         self.assertTrue(manifest.environment.agy_event_bridge)
         self.assertEqual(manifest.environment.agy_custom_policy.get("dangerous_tool"), "deny")
+        self.assertIsNotNone(manifest.environment.permissions)
+        self.assertIn("python3", manifest.environment.permissions["allowed_commands"])
+        self.assertEqual(manifest.environment.settings.get("model"), "gemini-3.7-flash")
         self.assertEqual(len(manifest.timeline), 3)
         self.assertEqual(manifest.timeline[1].step_type, "wait_for_hook_event")
         self.assertEqual(manifest.timeline[2].step_type, "assert_hook_event")
@@ -357,3 +447,4 @@ timeline:
 
 if __name__ == "__main__":
     unittest.main()
+

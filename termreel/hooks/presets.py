@@ -4,7 +4,7 @@ Pre-built hook scripts and configuration generators for Antigravity (agy) CLI.
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from termreel.hooks.models import HookEventType, HookDecision
 
 
@@ -235,3 +235,225 @@ def create_auto_approve_policy(
         for t in denied_tools:
             policy[t] = "deny"
     return policy
+
+
+DEFAULT_ALLOWED_COMMANDS: List[str] = [
+    "python3",
+    "python3 app.py",
+    "python",
+    "pytest",
+    "pytest -v",
+    "git",
+    "git status",
+    "git diff",
+    "git log",
+    "git add",
+    "git commit",
+    "cat",
+    "ls",
+    "echo",
+    "touch",
+    "mkdir",
+    "npm",
+    "npm test",
+    "npm run lint",
+    "node",
+    "yarn",
+    "cargo",
+    "make",
+    "bash",
+]
+
+
+KNOWN_AGENT_TOOLS: set = {
+    "run_command",
+    "write_to_file",
+    "replace_file_content",
+    "edit_file",
+    "read_file",
+    "write_file",
+    "list_dir",
+    "view_file",
+    "find_by_name",
+    "grep_search",
+    "code_search",
+    "moma_search",
+    "search_web",
+    "web_search",
+    "ask_question",
+    "ask_permission",
+    "ask_custom_permission",
+    "generate_image",
+    "read_url_content",
+    "read_browser_page",
+    "call_mcp_tool",
+    "list_resources",
+    "read_resource",
+    "manage_task",
+    "schedule",
+    "send_message",
+    "skill_search",
+    "notebook_edit",
+    "terminal",
+}
+
+
+def normalize_permission_string(perm: str) -> str:
+    """Normalize a permission rule string into agy settings format (e.g. 'command(python3)')."""
+    perm = str(perm).strip()
+    if not perm:
+        return ""
+    if perm.startswith("tool:") or perm.startswith("tool_name:"):
+        t_val = perm.split(":", 1)[1].strip()
+        return t_val
+    if perm.startswith("tool(") and perm.endswith(")"):
+        return perm[5:-1].strip()
+    if perm in KNOWN_AGENT_TOOLS:
+        return perm
+    if "(" in perm and perm.endswith(")"):
+        return perm
+    if perm.startswith("command:") or perm.startswith("cmd:"):
+        cmd_val = perm.split(":", 1)[1].strip()
+        return f"command({cmd_val})"
+    if perm.startswith("read_file:") or perm.startswith("read:") or perm.startswith("read_path:"):
+        p_val = perm.split(":", 1)[1].strip()
+        return f"read_file({p_val})"
+    if perm.startswith("write_file:") or perm.startswith("write:") or perm.startswith("write_path:"):
+        p_val = perm.split(":", 1)[1].strip()
+        return f"write_file({p_val})"
+    if perm.startswith("read_url:") or perm.startswith("url:"):
+        u_val = perm.split(":", 1)[1].strip()
+        return f"read_url({u_val})"
+    if perm.startswith("execute_url:"):
+        u_val = perm.split(":", 1)[1].strip()
+        return f"execute_url({u_val})"
+    if perm.startswith("mcp:"):
+        m_val = perm.split(":", 1)[1].strip()
+        return f"mcp({m_val})"
+    if perm.startswith("custom:"):
+        c_val = perm.split(":", 1)[1].strip()
+        return f"custom({c_val})"
+    if perm.startswith("unsandboxed:"):
+        u_val = perm.split(":", 1)[1].strip()
+        return f"unsandboxed({u_val})"
+    if perm.startswith("escalate_admin:"):
+        e_val = perm.split(":", 1)[1].strip()
+        return f"escalate_admin({e_val})"
+    return f"command({perm})"
+
+
+def create_agy_settings_config(
+    permissions: Optional[Union[List[str], Dict[str, Any]]] = None,
+    custom_settings: Optional[Dict[str, Any]] = None,
+    enable_terminal_sandbox: bool = False,
+    auto_allow_common: bool = True,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Generate standard .agents/settings.json dictionary for Antigravity (agy) CLI.
+    Pre-configures permission allowlists, terminal sandbox policies, and custom overrides.
+    """
+    allow_rules: List[str] = []
+    deny_rules: List[str] = []
+    mode = "request-review"
+    sandbox = enable_terminal_sandbox
+
+    if auto_allow_common:
+        for cmd in DEFAULT_ALLOWED_COMMANDS:
+            rule = normalize_permission_string(cmd)
+            if rule and rule not in allow_rules:
+                allow_rules.append(rule)
+
+    if isinstance(permissions, list):
+        for p in permissions:
+            if isinstance(p, str):
+                rule = normalize_permission_string(p)
+                if rule and rule not in allow_rules:
+                    allow_rules.append(rule)
+    elif isinstance(permissions, dict):
+        if "mode" in permissions:
+            mode = str(permissions["mode"])
+        if "enable_terminal_sandbox" in permissions:
+            sandbox = bool(permissions["enable_terminal_sandbox"])
+        if "enableTerminalSandbox" in permissions:
+            sandbox = bool(permissions["enableTerminalSandbox"])
+
+        for p in permissions.get("allow", []):
+            if isinstance(p, str):
+                rule = normalize_permission_string(p)
+                if rule and rule not in allow_rules:
+                    allow_rules.append(rule)
+
+        for cmd in permissions.get("allowed_commands", permissions.get("commands", [])):
+            if isinstance(cmd, str):
+                rule = f"command({cmd.strip()})"
+                if rule not in allow_rules:
+                    allow_rules.append(rule)
+
+        for t in permissions.get("allowed_tools", permissions.get("tools", [])):
+            if isinstance(t, str):
+                rule = normalize_permission_string(t.strip())
+                if rule not in allow_rules:
+                    allow_rules.append(rule)
+
+        for pth in permissions.get("allowed_paths", permissions.get("read_paths", permissions.get("read_files", []))):
+            if isinstance(pth, str):
+                rule = f"read_file({pth.strip()})"
+                if rule not in allow_rules:
+                    allow_rules.append(rule)
+
+        for pth in permissions.get("write_paths", permissions.get("write_files", [])):
+            if isinstance(pth, str):
+                rule = f"write_file({pth.strip()})"
+                if rule not in allow_rules:
+                    allow_rules.append(rule)
+
+        for url in permissions.get("allowed_urls", permissions.get("urls", [])):
+            if isinstance(url, str):
+                rule = f"read_url({url.strip()})"
+                if rule not in allow_rules:
+                    allow_rules.append(rule)
+
+        for d in permissions.get("deny", []):
+            if isinstance(d, str):
+                rule = normalize_permission_string(d)
+                if rule and rule not in deny_rules:
+                    deny_rules.append(rule)
+
+    settings_dict: Dict[str, Any] = {
+        "enableTerminalSandbox": sandbox,
+        "permissions": {
+            "mode": mode,
+            "allow": allow_rules,
+        },
+    }
+
+    if deny_rules:
+        settings_dict["permissions"]["deny"] = deny_rules
+
+    if model:
+        settings_dict["model"] = model
+
+    # Merge custom settings overrides
+    if custom_settings and isinstance(custom_settings, dict):
+        for k, v in custom_settings.items():
+            if k == "permissions" and isinstance(v, dict):
+                if "mode" in v:
+                    settings_dict["permissions"]["mode"] = v["mode"]
+                if "allow" in v and isinstance(v["allow"], list):
+                    for item in v["allow"]:
+                        rule = normalize_permission_string(str(item))
+                        if rule not in settings_dict["permissions"]["allow"]:
+                            settings_dict["permissions"]["allow"].append(rule)
+                if "deny" in v and isinstance(v["deny"], list):
+                    if "deny" not in settings_dict["permissions"]:
+                        settings_dict["permissions"]["deny"] = []
+                    for item in v["deny"]:
+                        rule = normalize_permission_string(str(item))
+                        if rule not in settings_dict["permissions"]["deny"]:
+                            settings_dict["permissions"]["deny"].append(rule)
+            else:
+                settings_dict[k] = v
+
+    return settings_dict
+

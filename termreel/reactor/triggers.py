@@ -15,6 +15,7 @@ class ActionType(str, Enum):
     PAUSE = "pause"
     SCREENSHOT = "screenshot"
     CALLBACK = "callback"
+    SELECT_CHOICE = "select_choice"
 
 
 @dataclass
@@ -22,6 +23,7 @@ class TriggerAction:
     """Action executed when a trigger matches."""
     action_type: ActionType
     value: Any = None
+    delay_before: float = 0.0
     delay_after: float = 0.0
 
 
@@ -67,24 +69,115 @@ class Trigger:
         self.last_fired_time = now
 
 
-def create_trust_dialog_trigger(action_key: str = "Enter") -> Trigger:
+def create_trust_dialog_trigger(
+    action_key: str = "Enter",
+    delay_before: float = 0.4,
+    delay_after: float = 0.4,
+) -> Trigger:
     """Helper creating a trigger that auto-confirms project workspace trust prompts."""
     return Trigger(
-        pattern=r"Do you trust the contents of this project|Yes, I trust|Trust project",
-        action=TriggerAction(action_type=ActionType.SEND_KEY, value=action_key, delay_after=0.5),
+        pattern=r"Do you trust the contents of this project|Yes, I trust|Trust project|Trust this workspace|Trust folder",
+        action=TriggerAction(
+            action_type=ActionType.SEND_KEY,
+            value=action_key,
+            delay_before=delay_before,
+            delay_after=delay_after,
+        ),
         once=True,
     )
 
 
-def create_permission_prompt_trigger(action_key: str = "Enter") -> Trigger:
-    """Helper creating a trigger that auto-approves CLI permission confirmation prompts."""
+def create_agy_permission_dialog_trigger(
+    choice: int = 1,
+    delay_before: float = 0.5,
+    delay_after: float = 0.4,
+    action_key: str = "Enter",
+) -> Trigger:
+    """
+    Helper creating a trigger that auto-resolves interactive permission selection dialogs
+    in Antigravity (agy) CLI, such as 'Requesting permission for: ... Do you want to proceed?'.
+    Allows a natural reading pause before selecting the affirmative choice.
+    """
+    pattern = (
+        r"Requesting permission for:"
+        r"|Do you want to proceed\??"
+        r"|Approve change\??"
+        r"|Allow tool call"
+        r"|Allow command"
+        r"|Allow execution"
+        r"|Allow this action"
+        r"|Do you want to execute"
+        r"|Do you want to run"
+        r"|Permission required"
+        r"|Permission request"
+        r"|Grant permission"
+        r"|Allow once"
+        r"|Always allow"
+        r"|Human[- ]in[- ]the[- ]loop"
+        r"|>\s*1\.\s*Yes"
+        r"|1\.\s*Yes"
+    )
+    if choice == 1:
+        action: Union[TriggerAction, List[TriggerAction]] = TriggerAction(
+            action_type=ActionType.SEND_KEY,
+            value=action_key,
+            delay_before=delay_before,
+            delay_after=delay_after,
+        )
+    else:
+        action = TriggerAction(
+            action_type=ActionType.SELECT_CHOICE,
+            value=choice,
+            delay_before=delay_before,
+            delay_after=delay_after,
+        )
+
     return Trigger(
-        pattern=r"Approve change\?|Allow tool call|\[y/N\]",
+        pattern=pattern,
+        action=action,
+        once=False,
+        cooldown_seconds=1.5,
+        max_firings=50,
+    )
+
+
+def create_yes_no_prompt_trigger(
+    response: str = "y",
+    action_key: str = "Enter",
+    delay_before: float = 0.3,
+    delay_after: float = 0.4,
+) -> Trigger:
+    """Helper creating a trigger that auto-answers [y/N] / [Y/n] confirmation prompts."""
+    return Trigger(
+        pattern=r"\[y/N\]|\[Y/n\]|\(y/n\)|\(Y/N\)",
         action=[
-            TriggerAction(action_type=ActionType.TYPE_TEXT, value="y", delay_after=0.1),
-            TriggerAction(action_type=ActionType.SEND_KEY, value=action_key, delay_after=0.5),
+            TriggerAction(
+                action_type=ActionType.TYPE_TEXT,
+                value=response,
+                delay_before=delay_before,
+                delay_after=0.1,
+            ),
+            TriggerAction(
+                action_type=ActionType.SEND_KEY,
+                value=action_key,
+                delay_after=delay_after,
+            ),
         ],
         once=False,
         cooldown_seconds=1.5,
-        max_firings=20,
+        max_firings=50,
+    )
+
+
+def create_permission_prompt_trigger(
+    action_key: str = "Enter",
+    delay_before: float = 0.3,
+    delay_after: float = 0.4,
+) -> Trigger:
+    """Helper creating a trigger that auto-approves CLI permission confirmation prompts."""
+    return create_agy_permission_dialog_trigger(
+        choice=1,
+        delay_before=delay_before,
+        delay_after=delay_after,
+        action_key=action_key,
     )

@@ -7,14 +7,18 @@ import json
 import os
 import shutil
 import stat
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from termreel.hooks.bridge import AgyHookBridge
-from termreel.hooks.presets import generate_hook_script, create_agy_hooks_config
+from termreel.hooks.presets import (
+    generate_hook_script,
+    create_agy_hooks_config,
+    create_agy_settings_config,
+)
 
 
 class HookManager:
     """
-    Provisions and manages Antigravity (agy) hooks in a workspace directory.
+    Provisions and manages Antigravity (agy) hooks and settings in a workspace directory.
     """
 
     def __init__(
@@ -25,6 +29,9 @@ class HookManager:
         log_events: bool = True,
         custom_policy: Optional[Dict[str, str]] = None,
         custom_hooks_config: Optional[Dict[str, Any]] = None,
+        permissions: Optional[Union[List[str], Dict[str, Any]]] = None,
+        settings: Optional[Dict[str, Any]] = None,
+        provision_settings: bool = True,
     ):
         self.workspace_dir = os.path.abspath(workspace_dir)
         self.bridge = bridge
@@ -32,10 +39,14 @@ class HookManager:
         self.log_events = log_events
         self.custom_policy = custom_policy or {}
         self.custom_hooks_config = custom_hooks_config
+        self.permissions = permissions
+        self.settings = settings
+        self.provision_settings = provision_settings
 
         self.agents_dir = os.path.join(self.workspace_dir, ".agents")
         self.hooks_dir = os.path.join(self.agents_dir, "hooks")
         self.hooks_json_path = os.path.join(self.agents_dir, "hooks.json")
+        self.settings_json_path = os.path.join(self.agents_dir, "settings.json")
         self.hook_script_path = os.path.join(self.hooks_dir, "termreel_hook.py")
 
         self.events_file = (
@@ -47,13 +58,15 @@ class HookManager:
         self._created_files: List[str] = []
         self._created_dirs: List[str] = []
         self._orig_hooks_json_backup: Optional[str] = None
+        self._orig_settings_json_backup: Optional[str] = None
         self._is_provisioned = False
 
     def provision(self) -> Dict[str, str]:
-        """Deploy hook script and .agents/hooks.json into the target workspace."""
+        """Deploy hook script, hooks.json, and settings.json into the target workspace."""
         if self._is_provisioned:
             return {
                 "hooks_json": self.hooks_json_path,
+                "settings_json": self.settings_json_path,
                 "hook_script": self.hook_script_path,
                 "events_file": self.events_file,
             }
@@ -103,7 +116,23 @@ class HookManager:
 
         self._created_files.append(self.hooks_json_path)
 
-        # 4. Attach bridge file if bridge is active
+        # 4. Provision .agents/settings.json if requested or configured
+        if self.provision_settings or self.permissions is not None or self.settings is not None:
+            if os.path.exists(self.settings_json_path):
+                self._orig_settings_json_backup = self.settings_json_path + ".termreel_backup"
+                shutil.copy2(self.settings_json_path, self._orig_settings_json_backup)
+
+            settings_data = create_agy_settings_config(
+                permissions=self.permissions,
+                custom_settings=self.settings,
+                auto_allow_common=self.auto_approve,
+            )
+            with open(self.settings_json_path, "w", encoding="utf-8") as f:
+                json.dump(settings_data, f, indent=2)
+
+            self._created_files.append(self.settings_json_path)
+
+        # 5. Attach bridge file if bridge is active
         if self.bridge:
             self.bridge.events_file = self.events_file
             self.bridge.start()
@@ -111,12 +140,13 @@ class HookManager:
         self._is_provisioned = True
         return {
             "hooks_json": self.hooks_json_path,
+            "settings_json": self.settings_json_path,
             "hook_script": self.hook_script_path,
             "events_file": self.events_file,
         }
 
     def cleanup(self):
-        """Clean up deployed hook artifacts and restore original hooks.json if needed."""
+        """Clean up deployed hook artifacts and restore original configs if needed."""
         if self.bridge:
             self.bridge.stop()
 
@@ -127,10 +157,22 @@ class HookManager:
             except Exception:
                 pass
         else:
-            # Delete generated hooks.json
             if os.path.exists(self.hooks_json_path):
                 try:
                     os.remove(self.hooks_json_path)
+                except Exception:
+                    pass
+
+        # Restore original settings.json if backed up
+        if self._orig_settings_json_backup and os.path.exists(self._orig_settings_json_backup):
+            try:
+                shutil.move(self._orig_settings_json_backup, self.settings_json_path)
+            except Exception:
+                pass
+        else:
+            if os.path.exists(self.settings_json_path) and self.settings_json_path in self._created_files:
+                try:
+                    os.remove(self.settings_json_path)
                 except Exception:
                     pass
 
@@ -169,3 +211,4 @@ class HookManager:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.cleanup()
+

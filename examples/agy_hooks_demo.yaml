@@ -30,11 +30,34 @@ environment:
   create_temp_workspace: true
   temp_workspace_prefix: "termreel_agy_hooks_"
   auto_trust: true
+  auto_approve_dialogs: true
 
   # Enable Antigravity lifecycle hooks & auto-approval
   agy_hooks: true
   agy_auto_approve: true
   agy_event_bridge: true
+
+  # Declarative permissions baked into workspace (.agents/settings.json)
+  permissions:
+    mode: "request-review"
+    allow:
+      - "command(python3)"
+      - "command(python3 app.py)"
+      - "command(python)"
+      - "command(pytest)"
+      - "command(git)"
+      - "command(git diff)"
+      - "command(git status)"
+    allowed_commands:
+      - "python3"
+      - "python3 app.py"
+      - "pytest"
+      - "git"
+    allowed_tools:
+      - "run_command"
+      - "write_to_file"
+      - "read_file"
+      - "edit_file"
 
   # Workspace initialization
   setup_commands:
