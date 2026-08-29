@@ -19,6 +19,8 @@ from termreel.emulator.parser import ANSIParser
 from termreel.renderer.cairo_renderer import CairoTerminalRenderer
 from termreel.transcoder.ffmpeg_pipe import FFmpegPipe
 from termreel.transcoder.gif_encoder import GifEncoder
+from termreel.generator.explorer import CLIExplorer
+from termreel.generator.scaffold import ScenarioGenerator
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,10 +68,24 @@ def build_parser() -> argparse.ArgumentParser:
     val_parser = subparsers.add_parser("validate", help="Validate a scenario YAML manifest syntax and schema")
     val_parser.add_argument("scenario", help="Path to scenario YAML manifest")
 
-    # 5. themes
+    # 5. probe
+    probe_parser = subparsers.add_parser("probe", help="Explore a CLI tool by probing its help, version, and subcommands")
+    probe_parser.add_argument("cli", help="Name or path of the CLI binary to probe (e.g. git, agy, gcloud, gh)")
+
+    # 6. generate / init
+    gen_parser = subparsers.add_parser("generate", aliases=["init"], help="Explore a CLI tool and generate a tailored scenario YAML manifest")
+    gen_parser.add_argument("cli", help="Target CLI tool to scaffold scenario for (e.g. git, agy, gcloud, gh)")
+    gen_parser.add_argument("-o", "--output", help="Output path for the generated YAML file (default: scenarios/<cli>_demo.yaml)")
+    gen_parser.add_argument("--title", help="Window title for the recording")
+    gen_parser.add_argument("--subtitle", help="Window subtitle for the recording")
+    gen_parser.add_argument("--theme", default="catppuccin-mocha", help="Visual theme (default: catppuccin-mocha)")
+    gen_parser.add_argument("--fps", type=int, default=30, help="Target recording FPS (default: 30)")
+    gen_parser.add_argument("-p", "--print", action="store_true", help="Print generated YAML to stdout instead of saving")
+
+    # 7. themes
     subparsers.add_parser("themes", help="List available visual themes and palettes")
 
-    # 6. info
+    # 8. info
     subparsers.add_parser("info", help="Display environment, dependencies, and codec status")
 
     return parser
@@ -216,6 +232,71 @@ def cmd_validate(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_probe(args: argparse.Namespace) -> int:
+    explorer = CLIExplorer(args.cli)
+    if not explorer.is_installed():
+        print(f"❌ Error: CLI binary '{args.cli}' was not found on PATH.", file=sys.stderr)
+        return 1
+
+    try:
+        spec = explorer.probe()
+        print(f"🔍 Discovered CLI Specification for: {spec.name}\n")
+        print(f"  • Path:        {spec.executable_path}")
+        print(f"  • Version:     {spec.version}")
+        print(f"  • Category:    {spec.category.upper()}")
+        print(f"  • Usage:       {spec.usage}")
+        print(f"  • Summary:     {spec.summary}")
+        if spec.subcommands:
+            print(f"\n  📦 Detected Subcommands ({len(spec.subcommands)}):")
+            for sub in spec.subcommands[:10]:
+                print(f"     - {sub.name:<18} {sub.description[:50]}")
+        if spec.flags:
+            print(f"\n  🚩 Detected Flags ({len(spec.flags)}):")
+            print(f"     {' '.join(spec.flags[:12])}")
+        if spec.recommended_permissions:
+            print(f"\n  🛡️  Recommended Permissions:")
+            print(f"     {', '.join(spec.recommended_permissions)}")
+        return 0
+    except Exception as e:
+        print(f"❌ Probing failed: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    explorer = CLIExplorer(args.cli)
+    if not explorer.is_installed():
+        print(f"❌ Error: CLI binary '{args.cli}' was not found on PATH.", file=sys.stderr)
+        return 1
+
+    try:
+        spec = explorer.probe()
+        yaml_content = ScenarioGenerator.generate(
+            spec=spec,
+            title=args.title,
+            subtitle=args.subtitle,
+            theme=args.theme,
+            fps=args.fps,
+        )
+
+        if args.print:
+            print(yaml_content)
+            return 0
+
+        target_output = args.output or f"examples/{spec.name}_generated.yaml"
+        os.makedirs(os.path.dirname(os.path.abspath(target_output)), exist_ok=True)
+        with open(target_output, "w", encoding="utf-8") as f:
+            f.write(yaml_content)
+
+        print(f"✨ Successfully generated scenario YAML for '{spec.name}': {target_output}")
+        print(f"   Category: {spec.category.upper()} | Theme: {args.theme} | Steps: inferred")
+        print(f"\nTo record this scenario, run:")
+        print(f"   termreel record {target_output}")
+        return 0
+    except Exception as e:
+        print(f"❌ Generation failed: {e}", file=sys.stderr)
+        return 1
+
+
 def cmd_themes() -> int:
     print("🎨 Available TermReel Visual Themes:\n")
     for name in list_themes():
@@ -261,6 +342,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_cast2video(args)
     elif args.subcommand == "validate":
         return cmd_validate(args)
+    elif args.subcommand == "probe":
+        return cmd_probe(args)
+    elif args.subcommand in ("generate", "init"):
+        return cmd_generate(args)
     elif args.subcommand == "themes":
         return cmd_themes()
     elif args.subcommand == "info":

@@ -42,6 +42,8 @@ from termreel.hooks.presets import (
     create_agy_hooks_config,
     create_auto_approve_policy,
 )
+from termreel.generator.explorer import CLIExplorer, CLISpec, SubcommandInfo
+from termreel.generator.scaffold import ScenarioGenerator
 
 __all__ = [
     "__version__",
@@ -86,4 +88,8 @@ __all__ = [
     "generate_hook_script",
     "create_agy_hooks_config",
     "create_auto_approve_policy",
+    "CLIExplorer",
+    "CLISpec",
+    "SubcommandInfo",
+    "ScenarioGenerator",
 ]

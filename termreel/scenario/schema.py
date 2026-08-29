@@ -187,3 +187,8 @@ class ScenarioManifest:
     def from_yaml_str(cls, yaml_str: str) -> "ScenarioManifest":
         data = yaml.safe_load(yaml_str)
         return cls.from_dict(data or {})
+
+    @classmethod
+    def from_yaml_string(cls, yaml_str: str) -> "ScenarioManifest":
+        return cls.from_yaml_str(yaml_str)
+
