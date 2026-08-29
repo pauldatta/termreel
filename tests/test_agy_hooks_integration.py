@@ -32,12 +32,12 @@ class TestAgyHooksIntegration(unittest.TestCase):
 echo "Agent starting up..."
 # Invoke PreInvocation hook
 if [ -f .agents/hooks/termreel_hook.py ]; then
-    echo '{"event_type": "PreInvocation", "prompt": "list files"}' | python3 .agents/hooks/termreel_hook.py
+    echo '{"invocationNum": 1, "initialNumSteps": 0, "conversationId": "conv-test-1"}' | python3 .agents/hooks/termreel_hook.py PreInvocation
 fi
 
-# Invoke PreToolUse hook
+# Invoke PreToolUse hook using authentic Antigravity camelCase protojson
 if [ -f .agents/hooks/termreel_hook.py ]; then
-    DECISION=$(echo '{"event_type": "PreToolUse", "tool_name": "list_files", "tool_args": {"dir": "."}}' | python3 .agents/hooks/termreel_hook.py)
+    DECISION=$(echo '{"toolCall": {"name": "list_files", "args": {"dir": "."}}, "stepIdx": 1, "conversationId": "conv-test-1"}' | python3 .agents/hooks/termreel_hook.py PreToolUse)
     echo "Hook decision: $DECISION"
 fi
 
@@ -46,12 +46,12 @@ echo "file1.txt file2.txt"
 
 # Invoke PostToolUse hook
 if [ -f .agents/hooks/termreel_hook.py ]; then
-    echo '{"event_type": "PostToolUse", "tool_name": "list_files", "tool_output": "file1.txt"}' | python3 .agents/hooks/termreel_hook.py
+    echo '{"stepIdx": 1, "toolCall": {"name": "list_files", "args": {"dir": "."}}, "toolOutput": "file1.txt", "conversationId": "conv-test-1"}' | python3 .agents/hooks/termreel_hook.py PostToolUse
 fi
 
 # Invoke PostInvocation hook
 if [ -f .agents/hooks/termreel_hook.py ]; then
-    echo '{"event_type": "PostInvocation", "response": "Found files"}' | python3 .agents/hooks/termreel_hook.py
+    echo '{"invocationNum": 1, "response": "Found files", "conversationId": "conv-test-1"}' | python3 .agents/hooks/termreel_hook.py PostInvocation
 fi
 echo "Agent finished."
 """)

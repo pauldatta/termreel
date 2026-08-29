@@ -88,7 +88,13 @@ class HookManager:
 
         # 3. Write hooks.json
         if self.custom_hooks_config:
-            hooks_data = self.custom_hooks_config
+            # Check if user gave top-level event keys directly (e.g. {"PreToolUse": ...})
+            raw_keys = set(self.custom_hooks_config.keys())
+            event_keys = {"PreToolUse", "PostToolUse", "PreInvocation", "PostInvocation", "Stop", "SessionStart", "SessionEnd"}
+            if raw_keys.intersection(event_keys):
+                hooks_data = {"custom-hook": self.custom_hooks_config}
+            else:
+                hooks_data = self.custom_hooks_config
         else:
             hooks_data = create_agy_hooks_config(hook_script_path=self.hook_script_path)
 

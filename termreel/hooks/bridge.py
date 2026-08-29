@@ -126,26 +126,35 @@ class AgyHookBridge:
         self,
         event_type: Optional[str] = None,
         tool_name: Optional[str] = None,
+        decision: Optional[str] = None,
     ) -> List[HookEvent]:
-        """Query captured hook events by event type and/or tool name."""
+        """Query captured hook events by event type, tool name, and/or decision."""
         self.read_new_events()
         with self._lock:
             evs = list(self.events)
 
-        norm_type = HookEventType.from_string(event_type).value if event_type else None
+        norm_type = None
+        if event_type:
+            try:
+                norm_type = HookEventType.from_string(event_type).value
+            except Exception:
+                norm_type = str(event_type)
 
         filtered = []
         for ev in evs:
             if norm_type:
                 try:
                     ev_norm = HookEventType.from_string(ev.event_type).value
-                    if ev_norm != norm_type:
-                        continue
                 except Exception:
-                    if ev.event_type.lower() != event_type.lower():
-                        continue
+                    ev_norm = str(ev.event_type)
+
+                if ev_norm.lower() != norm_type.lower() and ev.event_type.lower() != event_type.lower():
+                    continue
 
             if tool_name and ev.tool_name != tool_name:
+                continue
+
+            if decision and (not ev.decision or ev.decision.lower() != decision.lower()):
                 continue
 
             filtered.append(ev)
@@ -156,6 +165,7 @@ class AgyHookBridge:
         self,
         event_type: str,
         tool_name: Optional[str] = None,
+        decision: Optional[str] = None,
         timeout: float = 30.0,
         poll_interval: float = 0.1,
     ) -> Optional[HookEvent]:
@@ -165,7 +175,7 @@ class AgyHookBridge:
         """
         start_t = time.time()
         while time.time() - start_t < timeout:
-            matches = self.get_events(event_type=event_type, tool_name=tool_name)
+            matches = self.get_events(event_type=event_type, tool_name=tool_name, decision=decision)
             if matches:
                 return matches[-1]
             time.sleep(poll_interval)
@@ -175,14 +185,20 @@ class AgyHookBridge:
         self,
         event_type: str,
         tool_name: Optional[str] = None,
+        decision: Optional[str] = None,
         timeout: float = 5.0,
     ):
         """Assert that a hook event has been observed within the timeout window."""
-        ev = self.wait_for_event(event_type=event_type, tool_name=tool_name, timeout=timeout)
+        ev = self.wait_for_event(
+            event_type=event_type,
+            tool_name=tool_name,
+            decision=decision,
+            timeout=timeout,
+        )
         if not ev:
-            all_evs = [f"{e.event_type}({e.tool_name or ''})" for e in self.events]
+            all_evs = [f"{e.event_type}(tool={e.tool_name or ''}, dec={e.decision or ''})" for e in self.events]
             raise AssertionError(
-                f"Expected hook event '{event_type}' (tool={tool_name}) not observed within {timeout}s.\n"
+                f"Expected hook event '{event_type}' (tool={tool_name}, decision={decision}) not observed within {timeout}s.\n"
                 f"Recorded hook events: {all_evs}"
             )
 
@@ -190,14 +206,15 @@ class AgyHookBridge:
         self,
         event_type: str,
         tool_name: Optional[str] = None,
+        decision: Optional[str] = None,
         timeout: float = 2.0,
     ):
         """Assert that a specific hook event did NOT occur."""
         time.sleep(timeout)
-        matches = self.get_events(event_type=event_type, tool_name=tool_name)
+        matches = self.get_events(event_type=event_type, tool_name=tool_name, decision=decision)
         if matches:
             raise AssertionError(
-                f"Forbidden hook event '{event_type}' (tool={tool_name}) was observed: {matches}"
+                f"Forbidden hook event '{event_type}' (tool={tool_name}, decision={decision}) was observed: {matches}"
             )
 
     def clear(self):

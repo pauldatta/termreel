@@ -140,6 +140,9 @@ class ScenarioRunner:
             elif norm == HookEventType.POST_INVOCATION.value:
                 with self._lock:
                     self._status_pill = "● LIVE TTY"
+            elif norm == HookEventType.STOP.value:
+                with self._lock:
+                    self._status_pill = "● IDLE"
 
         self.hook_bridge.add_listener(_on_hook_event)
 
@@ -568,10 +571,14 @@ class ScenarioRunner:
         elif st in ("wait_for_hook_event", "wait_hook"):
             ev_type = params.get("event") or params.get("event_type") or params.get("value", "")
             tool = params.get("tool") or params.get("tool_name")
+            decision = params.get("decision")
             timeout = float(params.get("timeout", 30.0))
+            strict = bool(params.get("strict", params.get("fail_on_timeout", False)))
             pause_after = float(params.get("pause", params.get("reading_pause", 0.5)))
-            ev = self.hook_bridge.wait_for_event(event_type=ev_type, tool_name=tool, timeout=timeout)
+            ev = self.hook_bridge.wait_for_event(event_type=ev_type, tool_name=tool, decision=decision, timeout=timeout)
             if not ev:
+                if strict:
+                    raise TimeoutError(f"Hook event '{ev_type}' (tool={tool}, decision={decision}) did not arrive within {timeout}s.")
                 self._log(f"⚠️ Warning: Hook event '{ev_type}' (tool={tool}) did not arrive within {timeout}s.")
             if pause_after > 0:
                 time.sleep(pause_after)
@@ -579,12 +586,13 @@ class ScenarioRunner:
         elif st in ("assert_hook_event", "assert_hook"):
             ev_type = params.get("event") or params.get("event_type") or params.get("value", "")
             tool = params.get("tool") or params.get("tool_name")
+            decision = params.get("decision")
             timeout = float(params.get("timeout", 5.0))
             negate = bool(params.get("negate", False))
             if negate:
-                self.hook_bridge.assert_event_absent(event_type=ev_type, tool_name=tool, timeout=timeout)
+                self.hook_bridge.assert_event_absent(event_type=ev_type, tool_name=tool, decision=decision, timeout=timeout)
             else:
-                self.hook_bridge.assert_event_present(event_type=ev_type, tool_name=tool, timeout=timeout)
+                self.hook_bridge.assert_event_present(event_type=ev_type, tool_name=tool, decision=decision, timeout=timeout)
 
         elif st == "set_statusbar":
             with self._lock:

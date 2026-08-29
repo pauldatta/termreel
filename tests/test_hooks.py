@@ -37,19 +37,32 @@ class TestHookModels(unittest.TestCase):
         self.assertEqual(HookEventType.from_string("post_tool"), HookEventType.POST_TOOL_USE)
         self.assertEqual(HookEventType.from_string("pre_turn"), HookEventType.PRE_INVOCATION)
         self.assertEqual(HookEventType.from_string("post_invocation"), HookEventType.POST_INVOCATION)
+        self.assertEqual(HookEventType.from_string("stop"), HookEventType.STOP)
         self.assertEqual(HookEventType.from_string("session_start"), HookEventType.SESSION_START)
         self.assertEqual(HookEventType.from_string("session_end"), HookEventType.SESSION_END)
+        # Verify unknown custom string does not throw ValueError
+        self.assertEqual(HookEventType.from_string("nonexistent_event"), HookEventType.PRE_TOOL_USE)
 
     def test_hook_result_serialization(self):
-        res = HookResult(allow=True, decision="allow", message="ok")
+        res = HookResult(
+            allow=True,
+            decision="allow",
+            reason="Approved by policy",
+            permission_overrides=["command(npm test)"],
+            inject_steps=[{"ephemeralMessage": "hello"}],
+        )
         d = res.to_dict()
         self.assertTrue(d["allow"])
         self.assertEqual(d["decision"], "allow")
-        self.assertEqual(d["message"], "ok")
+        self.assertEqual(d["reason"], "Approved by policy")
+        self.assertEqual(d["permissionOverrides"], ["command(npm test)"])
+        self.assertEqual(d["injectSteps"], [{"ephemeralMessage": "hello"}])
 
         deser = HookResult.from_dict(d)
         self.assertTrue(deser.allow)
         self.assertEqual(deser.decision, "allow")
+        self.assertEqual(deser.reason, "Approved by policy")
+        self.assertEqual(deser.permission_overrides, ["command(npm test)"])
 
     def test_hook_event_serialization(self):
         ev = HookEvent(
@@ -57,6 +70,8 @@ class TestHookModels(unittest.TestCase):
             tool_name="read_file",
             tool_args={"path": "main.py"},
             decision="allow",
+            step_idx=5,
+            session_id="conv-12345",
         )
         json_str = ev.to_json()
         deser = HookEvent.from_json(json_str)
@@ -64,6 +79,30 @@ class TestHookModels(unittest.TestCase):
         self.assertEqual(deser.tool_name, "read_file")
         self.assertEqual(deser.tool_args, {"path": "main.py"})
         self.assertEqual(deser.decision, "allow")
+        self.assertEqual(deser.step_idx, 5)
+        self.assertEqual(deser.session_id, "conv-12345")
+
+    def test_hook_event_from_antigravity_protojson(self):
+        """Verify parsing authentic Antigravity camelCase protojson payload."""
+        agy_payload = {
+            "toolCall": {
+                "name": "write_to_file",
+                "args": {
+                    "TargetFile": "/workspace/main.py",
+                    "CodeContent": "print('hello')",
+                },
+            },
+            "stepIdx": 12,
+            "conversationId": "ag-sess-9988",
+            "workspacePaths": ["/workspace"],
+            "modelName": "gemini-2.5-pro",
+        }
+        ev = HookEvent.from_dict(agy_payload)
+        self.assertEqual(ev.tool_name, "write_to_file")
+        self.assertEqual(ev.tool_args["TargetFile"], "/workspace/main.py")
+        self.assertEqual(ev.step_idx, 12)
+        self.assertEqual(ev.session_id, "ag-sess-9988")
+        self.assertEqual(ev.model_name, "gemini-2.5-pro")
 
 
 class TestHookBridge(unittest.TestCase):
@@ -81,16 +120,26 @@ class TestHookBridge(unittest.TestCase):
         bridge.start()
 
         ev1 = HookEvent(event_type="SessionStart")
-        ev2 = HookEvent(event_type="PreToolUse", tool_name="write_file")
-        ev3 = HookEvent(event_type="PostToolUse", tool_name="write_file")
+        ev2 = HookEvent(event_type="PreToolUse", tool_name="write_file", decision="allow")
+        ev3 = HookEvent(event_type="PreToolUse", tool_name="dangerous_tool", decision="deny")
+        ev4 = HookEvent(event_type="PostToolUse", tool_name="write_file")
 
         bridge.record_event(ev1)
         bridge.record_event(ev2)
         bridge.record_event(ev3)
+        bridge.record_event(ev4)
 
         evs = bridge.get_events(event_type="PreToolUse")
-        self.assertEqual(len(evs), 1)
-        self.assertEqual(evs[0].tool_name, "write_file")
+        self.assertEqual(len(evs), 2)
+
+        # Test decision filtering
+        allowed_evs = bridge.get_events(event_type="PreToolUse", decision="allow")
+        self.assertEqual(len(allowed_evs), 1)
+        self.assertEqual(allowed_evs[0].tool_name, "write_file")
+
+        denied_evs = bridge.get_events(event_type="PreToolUse", decision="deny")
+        self.assertEqual(len(denied_evs), 1)
+        self.assertEqual(denied_evs[0].tool_name, "dangerous_tool")
 
         # Test wait_for_event
         found = bridge.wait_for_event(event_type="PostToolUse", tool_name="write_file", timeout=1.0)
@@ -98,7 +147,8 @@ class TestHookBridge(unittest.TestCase):
         self.assertEqual(found.tool_name, "write_file")
 
         # Test assertions
-        bridge.assert_event_present("PreToolUse", tool_name="write_file", timeout=1.0)
+        bridge.assert_event_present("PreToolUse", tool_name="write_file", decision="allow", timeout=1.0)
+        bridge.assert_event_present("PreToolUse", tool_name="dangerous_tool", decision="deny", timeout=1.0)
         bridge.assert_event_absent("PreToolUse", tool_name="nonexistent_tool", timeout=0.1)
 
         bridge.stop()
@@ -131,7 +181,8 @@ class TestHookScriptExecution(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def test_generated_script_auto_approves(self):
+    def test_generated_script_antigravity_pre_tool_use_auto_approves(self):
+        """Test with authentic Antigravity PreToolUse payload format."""
         script_src = generate_hook_script(
             bridge_file=self.events_file,
             auto_approve=True,
@@ -140,13 +191,17 @@ class TestHookScriptExecution(unittest.TestCase):
         with open(self.script_path, "w", encoding="utf-8") as f:
             f.write(script_src)
 
+        # Authentic Antigravity PreToolUse payload sent to stdin
         payload = {
-            "event_type": "PreToolUse",
-            "tool_name": "run_command",
-            "tool_args": {"command": "npm test"},
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": "pytest -v"},
+            },
+            "stepIdx": 3,
+            "conversationId": "ag-test-session",
         }
         res = subprocess.run(
-            [sys.executable, self.script_path],
+            [sys.executable, self.script_path, "PreToolUse"],
             input=json.dumps(payload),
             text=True,
             capture_output=True,
@@ -156,13 +211,16 @@ class TestHookScriptExecution(unittest.TestCase):
         self.assertTrue(out.get("allow"))
         self.assertEqual(out.get("decision"), "allow")
 
-        # Verify event was logged to bridge file
+        # Verify event was logged to bridge file with extracted tool_name
         self.assertTrue(os.path.exists(self.events_file))
         with open(self.events_file, "r", encoding="utf-8") as f:
             lines = f.readlines()
         self.assertEqual(len(lines), 1)
         logged_ev = json.loads(lines[0])
         self.assertEqual(logged_ev["tool_name"], "run_command")
+        self.assertEqual(logged_ev["tool_args"]["CommandLine"], "pytest -v")
+        self.assertEqual(logged_ev["session_id"], "ag-test-session")
+        self.assertEqual(logged_ev["step_idx"], 3)
 
     def test_generated_script_custom_policy_denial(self):
         policy = {"dangerous_exec": "deny", "read_file": "allow"}
@@ -175,20 +233,56 @@ class TestHookScriptExecution(unittest.TestCase):
             f.write(script_src)
 
         payload = {
-            "event_type": "PreToolUse",
-            "tool_name": "dangerous_exec",
-            "tool_args": {"cmd": "rm -rf /"},
+            "toolCall": {
+                "name": "dangerous_exec",
+                "args": {"cmd": "rm -rf /"},
+            },
+            "stepIdx": 1,
         }
         res = subprocess.run(
-            [sys.executable, self.script_path],
+            [sys.executable, self.script_path, "PreToolUse"],
             input=json.dumps(payload),
             text=True,
             capture_output=True,
         )
-        self.assertEqual(res.returncode, 1)
+        # Hooks exit with code 0 to pass verdict JSON to agy
+        self.assertEqual(res.returncode, 0)
         out = json.loads(res.stdout.strip())
         self.assertFalse(out.get("allow"))
         self.assertEqual(out.get("decision"), "deny")
+        self.assertIn("reason", out)
+
+    def test_generated_script_lifecycle_events_contracts(self):
+        """Test output JSON contracts for PreInvocation, PostInvocation, PostToolUse, Stop."""
+        script_src = generate_hook_script(
+            bridge_file=self.events_file,
+            auto_approve=True,
+            log_events=True,
+        )
+        with open(self.script_path, "w", encoding="utf-8") as f:
+            f.write(script_src)
+
+        # 1. PreInvocation -> {"injectSteps": []}
+        res = subprocess.run(
+            [sys.executable, self.script_path, "PreInvocation"],
+            input=json.dumps({"invocationNum": 1}),
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(res.returncode, 0)
+        out = json.loads(res.stdout.strip())
+        self.assertIn("injectSteps", out)
+
+        # 2. PostToolUse -> {}
+        res = subprocess.run(
+            [sys.executable, self.script_path, "PostToolUse"],
+            input=json.dumps({"stepIdx": 1, "toolOutput": "success"}),
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(res.returncode, 0)
+        out = json.loads(res.stdout.strip())
+        self.assertEqual(out, {})
 
 
 class TestHookManager(unittest.TestCase):
@@ -210,7 +304,16 @@ class TestHookManager(unittest.TestCase):
 
         with open(prov["hooks_json"], "r", encoding="utf-8") as f:
             cfg = json.load(f)
-        self.assertIn("PreToolUse", cfg)
+
+        # Top-level key must strictly be the hook name (e.g. 'termreel')
+        self.assertIn("termreel", cfg)
+        self.assertIsInstance(cfg["termreel"], dict)
+        self.assertIn("PreToolUse", cfg["termreel"])
+        self.assertIn("PostToolUse", cfg["termreel"])
+        self.assertIn("PreInvocation", cfg["termreel"])
+        self.assertIn("Stop", cfg["termreel"])
+        # Must NOT pollute top-level with raw event keys
+        self.assertNotIn("PreToolUse", cfg.keys() - {"termreel"})
 
         # Clean up
         hm.cleanup()
