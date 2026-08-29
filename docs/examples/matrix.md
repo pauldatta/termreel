@@ -1,0 +1,61 @@
+# Example: Matrix System HUD Diagnostics
+
+This scenario demonstrates high-contrast phosphorescent green terminal vector rendering running system health monitors.
+
+---
+
+## Scenario Manifest (`examples/matrix_demo.yaml`)
+
+```yaml
+version: "1.0"
+
+metadata:
+  title: "Matrix Terminal Diagnostics"
+  subtitle: "System Monitor Stream"
+  output: "output/matrix_demo.mp4"
+  poster_output: "output/matrix_demo_poster.png"
+  resolution: [1280, 720]
+  fps: 30
+  theme: "matrix"
+  statusbar_left: "Linux 6.6 | Matrix HUD | UTF-8"
+  statusbar_right: "TermReel HD"
+
+timeline:
+  - show_card:
+      tag: "Matrix HUD"
+      title: "System Diagnostics Stream"
+      desc: "Live vector terminal rendering with high-contrast phosphor green theme"
+      duration: 2.0
+
+  - launch:
+      command: "bash"
+
+  - run_shell:
+      command: "uname -srm"
+      pause: 1.0
+
+  - run_shell:
+      command: "df -h / | head -n 2"
+      pause: 1.2
+
+  - run_shell:
+      command: "free -m"
+      pause: 1.5
+
+  - run_shell:
+      command: "uptime"
+      pause: 1.5
+
+  - show_card:
+      tag: "Status"
+      title: "All Subsystems Nominal"
+      duration: 2.0
+```
+
+---
+
+## How to Record
+
+```bash
+termreel record examples/matrix_demo.yaml
+```

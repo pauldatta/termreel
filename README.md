@@ -1,83 +1,126 @@
-# TermReel: Universal Terminal Recording & Video Synthesis Harness
+# TermReel
 
-**TermReel** (`termreel`) is a standalone, headless CLI recording harness and deterministic video synthesis engine. It drives any interactive CLI or AI coding agent (`agy`, `gemini`, `gh`, `kubectl`, `vim`, Bubbletea/Textual TUIs) inside a real pseudo-terminal (PTY), simulates natural keystrokes, reacts to live screen events, and streams pixel-perfect H.264 MP4/WebM videos and GIF animations with custom window chrome, chapter cards, and token redaction.
+[![CI](https://github.com/pauldatta/termreel/actions/workflows/ci.yml/badge.svg)](https://github.com/pauldatta/termreel/actions/workflows/ci.yml)
+[![Docs](https://github.com/pauldatta/termreel/actions/workflows/docs.yml/badge.svg)](https://pauldatta.github.io/termreel/)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
----
-
-## Key Capabilities
-
-1. **True PTY & Tmux Supervision:** Runs real CLI binaries in pseudo-terminals with full ANSI 256-color and 24-bit TrueColor RGB support.
-2. **Antigravity Hooks Integration:** Provisions `.agents/hooks.json` to auto-approve interactive tool actions without requiring `--dangerously-skip-permissions` or `-p`, bridging lifecycle events (`PreToolUse`, `PostInvocation`) into live status badges.
-3. **Event-Driven Screen Reactor:** Auto-confirms modal dialogs (like workspace trust prompts or permission approvals) and detects model idle states without brittle sleep timers.
-4. **Zero Intermediate Disk I/O:** Renders vector frames directly with PyCairo into an FFmpeg stdin pipe.
-5. **Declarative Scenario Automation:** Drives multi-step interactive workflows via YAML scenario manifests or Python scripts.
-6. **Secret Redaction:** Built-in regex masking for API keys, OAuth tokens, and private hostnames.
-7. **Dual Telemetry Export:** Synthesizes standard MP4 videos alongside Asciinema v2 (`.cast`) event logs and PNG poster thumbnails.
+**TermReel** (`termreel` / `reccli`) is a standalone, headless CLI recording harness and deterministic video synthesis engine. It drives interactive CLI tools, TUIs, and autonomous AI coding agents (`agy`, `git`, `gcloud`, `gh`, `kubectl`, `vim`, etc.) inside real pseudo-terminals (PTY/tmux), injects natural human keystrokes, reacts to live screen events, and streams pixel-perfect H.264 MP4/WebM videos, animated GIFs, and Asciinema v2 (`.cast`) event streams directly into FFmpeg with **zero intermediate disk I/O**.
 
 ---
 
-## Quick Start
+## Key Features
 
-### 1. View System Diagnostics & Themes
+- **True Pseudo-Terminal (PTY) & Tmux Supervision**: Executes real binaries in authentic PTY environments with complete ANSI 256-color and 24-bit TrueColor RGB support.
+- **Reactive UI & Permission Interception**: Intercepts modal trust dialogs, model thinking spinners, and human-in-the-loop permission prompts without requiring YOLO flags or print modes.
+- **Zero Intermediate Disk I/O**: Direct memory pipe streaming raw BGRA vector frames rendered by PyCairo into FFmpeg stdin.
+- **Declarative YAML Scenarios**: Multi-step interactive workflows, chapter cards, dynamic status bars, and keystroke cadence simulation.
+- **Automated CLI Exploration & Scaffolding**: `termreel probe` and `termreel generate` inspect target CLIs to auto-craft validated scenario manifests.
+- **Dual Telemetry Export**: Simultaneously outputs standard MP4 videos, animated GIFs, PNG poster thumbnails, and Asciinema v2 (`.cast`) telemetry logs.
+- **Token & Secret Redaction**: In-place regular expression masking for API keys, OAuth credentials, and private tokens.
+- **Parallel Async Test Runner**: Fast test suite execution (`termreel test -w 8`).
+
+---
+
+## Quickstart
+
+### 1. Installation
+
 ```bash
-termreel info
-termreel themes
+git clone https://github.com/pauldatta/termreel.git
+cd termreel
+pip install -e .
 ```
 
-### 2. Record an Interactive Scenario
-```bash
-termreel record examples/agy_quickstart.yaml -o output/agy_quickstart.mp4
-```
+### 2. Basic Commands
 
-### 3. Record Any Command Directly
 ```bash
-termreel exec "git status" --output output/git_status.mp4 --theme tokyo-night
-```
+# Explore CLI subcommands and capabilities
+termreel probe git
 
-### 4. Transcode Asciinema Cast to Video
-```bash
+# Scaffold a tailored scenario YAML
+termreel generate git -o scenarios/git_demo.yaml --theme tokyo-night
+
+# Record the high-fidelity video
+termreel record scenarios/git_demo.yaml -o output/git_demo.mp4
+
+# Direct one-shot recording
+termreel exec "git status" -o output/status.mp4 --theme nord
+
+# Transcode Asciinema cast to MP4
 termreel cast2video session.cast -o session.mp4 --theme dracula
+
+# Run full test suite in parallel
+termreel test -w 8
 ```
 
 ---
 
-## Project Structure
+## Sample Scenario Manifest
 
-```
-termreel/
-├── pyproject.toml                     # Package definition & CLI entry points
-├── README.md                          # Project overview & quickstart
-├── docs/
-│   ├── SDD_TERMREEL.md                # Full Software Design Document (RFC)
-│   └── USAGE.md                       # Comprehensive User & Developer Guide
-├── examples/
-│   ├── agy_quickstart.yaml            # Antigravity CLI scenario with trust triggers
-│   ├── git_workflow.yaml              # Interactive Git staging & log workflow
-│   └── python_repl.yaml               # Interactive Python REPL session
-├── termreel/
-│   ├── emulator/                      # ANSI parser, 2D grid state, 256/TrueColor palettes
-│   ├── supervisor/                    # Native PTY and Tmux session controllers
-│   ├── reactor/                       # Screen monitor, triggers, and idle detector
-│   ├── renderer/                      # PyCairo vector rasterizer, chrome, cards, 9 themes
-│   ├── transcoder/                    # Zero-disk FFmpeg stdin pipe and GIF encoder
-│   ├── scenario/                      # Declarative YAML manifest schema & runner
-│   ├── utils/                         # Natural keystroke cadence, redaction, .cast parser
-│   └── cli.py                         # Unified command-line interface
-└── tests/                             # Unit and integration test suite
+```yaml
+version: "1.0"
+
+metadata:
+  title: "Git Workflow Masterclass"
+  subtitle: "Staging, Commit Hygiene & Graph Inspection"
+  output: "output/git_workflow.mp4"
+  poster_output: "output/git_workflow_poster.png"
+  resolution: [1280, 720]
+  fps: 30
+  theme: "tokyo-night"
+  statusbar_left: "Git v2.55 | main | clean"
+  statusbar_right: "TermReel HD"
+
+environment:
+  create_temp_workspace: true
+
+timeline:
+  - show_card:
+      tag: "Module 1"
+      title: "Interactive Git Workflow"
+      desc: "Simulating human typing cadence with TrueColor logs"
+      duration: 2.0
+
+  - launch:
+      command: "bash"
+
+  - run_shell:
+      command: "git status"
+      pause: 1.2
+
+  - run_shell:
+      command: "git log --graph --oneline --decorate"
+      pause: 2.0
+
+  - show_card:
+      tag: "Complete"
+      title: "Workflow Mastered"
+      duration: 1.5
 ```
 
 ---
 
-## Running Tests
+## Documentation
 
-Run the complete test suite (including live `agy` CLI integration test):
+Full documentation, architecture specs, and scenario guides are available at [https://pauldatta.github.io/termreel/](https://pauldatta.github.io/termreel/) or in the [`docs/`](docs/) directory:
 
-```bash
-python3 -m unittest discover -s tests -v
-```
+- [Architecture & Design](docs/architecture.md)
+- [CLI Reference](docs/cli.md)
+- [Scenario Manifest Specification](docs/scenarios.md)
+- [Recording Interactive AI Agents](docs/interactive-agents.md)
+- [CLI Explorer & Scaffolding](docs/generator.md)
+- [Visual Themes & Custom Chrome](docs/themes.md)
+- [Example Scenarios](docs/examples/antigravity.md)
+
+---
+
+## Contributing
+
+Contributions are welcome! Please review our [Contribution Guide](CONTRIBUTING.md) for development workflows, testing guidelines, and code standards.
 
 ---
 
 ## License
 
-Apache-2.0
+TermReel is open-source software licensed under the [Apache-2.0 License](LICENSE).

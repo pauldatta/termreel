@@ -29,8 +29,8 @@ class TestRedaction(unittest.TestCase):
         self.assertNotIn("gh" + "p_", res_ghp)
 
     def test_custom_pattern(self):
-        redactor = Redactor(custom_patterns=[r"internal-host-[0-9]+\.corp\.google\.com"])
-        res = redactor.redact_text("Connecting to internal-host-42.corp.google.com on port 8080")
+        redactor = Redactor(custom_patterns=[r"internal-host-[0-9]+\.example\.corp"])
+        res = redactor.redact_text("Connecting to internal-host-42.example.corp on port 8080")
         self.assertNotIn("internal-host-42", res)
         self.assertIn("Connecting to •", res)
 
