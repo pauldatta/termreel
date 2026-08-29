@@ -26,28 +26,33 @@
 
 TermReel includes an **Agent Skill** (`skills/termreel/SKILL.md` / `.agents/skills/termreel/SKILL.md`) that allows AI coding assistants to automatically script, record, and verify terminal videos directly from your high-level instructions.
 
+```mermaid
+flowchart TD
+    User(["👤 User Natural Language Prompt or Doc Reference<br><i>'Record an interactive walkthrough of refactoring auth and running tests'</i>"])
+    
+    subgraph Agent ["🤖 AI Coding Agent (agy / Claude Code / Gemini)"]
+        Skill["📖 TermReel Skill Guide<br>(skills/termreel/SKILL.md)"]
+        Probe["🔍 Probe Target CLI<br><code>termreel probe &lt;cli&gt;</code>"]
+        Scaffold["📝 Generate Scenario YAML<br>(Steps, Chapter Cards, Cadence, Permissions)"]
+        Skill --> Probe --> Scaffold
+    end
+    
+    subgraph Engine ["⚡ TermReel Headless Recording Harness"]
+        PTY["💻 Pseudo-Terminal / Tmux Session"]
+        Reactor["🛡️ Reactive Screen Reactor<br>(Auto Trust &amp; [y/N] Permission Interception)"]
+        Cairo["🎨 PyCairo Monospace Vector Engine"]
+        Transcoder["🎬 In-Memory FFmpeg Pipe<br>(Zero Disk I/O)"]
+        PTY <--> Reactor
+        PTY --> Cairo --> Transcoder
+    end
+    
+    Artifacts(["📦 Verified Video Artifacts<br>• High-Definition Faststart MP4 Video<br>• Asciinema v2 .cast Telemetry Log<br>• High-Res PNG Poster Thumbnail"])
+    
+    User --> Agent
+    Agent --> Engine
+    Engine --> Artifacts
 ```
-┌──────────────────────────────────────┐
-│  User Plain Text Prompt / Doc Link   │
-│  "Record a demo of refactoring auth" │
-└──────────────────┬───────────────────┘
-                   │
-                   ▼
-┌──────────────────────────────────────┐
-│  AI Agent with TermReel Skill        │
-│  • Probes target CLI (`probe`)       │
-│  • Reads requirements from docs      │
-│  • Crafts scenario YAML manifest     │
-└──────────────────┬───────────────────┘
-                   │
-                   ▼
-┌──────────────────────────────────────┐
-│  TermReel Headless Recording Harness │
-│  • Spawns PTY / Tmux session         │
-│  • Handles permissions & trust dialog│
-│  • Outputs pixel-perfect MP4 + .cast │
-└──────────────────────────────────────┘
-```
+
 
 ### 1. Zero-YAML Prompting: Prompt in Plain English
 You do not need to write YAML by hand. You can instruct your AI assistant in natural language:
