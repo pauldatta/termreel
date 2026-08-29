@@ -3,9 +3,11 @@ High-performance PyCairo vector terminal frame renderer.
 """
 
 import math
+import threading
 from typing import Optional, Dict, Tuple, Any, Union
 import cairo
 from termreel.emulator.state import TerminalState, CharCell
+
 from termreel.renderer.themes import Theme, get_theme
 from termreel.renderer.chrome import ChromeRenderer
 from termreel.renderer.cards import CardRenderer
@@ -131,76 +133,78 @@ class CairoTerminalRenderer:
             right_text=status_right or "TermReel HD",
         )
 
-        # 4. Render 2D Grid Cells
-        max_r = min(term_state.rows, self.rows)
-        max_c = min(term_state.cols, self.cols)
+        # 4. Render 2D Grid Cells & Cursor under state lock
+        with getattr(term_state, "_lock", threading.RLock()):
+            max_r = min(term_state.rows, self.rows)
+            max_c = min(term_state.cols, self.cols)
 
-        for r_idx in range(max_r):
-            row_y = self.term_y + (r_idx * self.line_height) + self.font_size
-            for c_idx in range(max_c):
-                cell: CharCell = term_state.grid[r_idx][c_idx]
-                cell_x = self.term_x + (c_idx * self.char_width)
+            for r_idx in range(max_r):
+                row_y = self.term_y + (r_idx * self.line_height) + self.font_size
+                for c_idx in range(max_c):
+                    cell: CharCell = term_state.grid[r_idx][c_idx]
+                    cell_x = self.term_x + (c_idx * self.char_width)
 
-                effective_bg = cell.effective_bg
-                effective_fg = cell.effective_fg
+                    effective_bg = cell.effective_bg
+                    effective_fg = cell.effective_fg
 
-                # Custom cell background rectangle
-                if effective_bg != self.theme.terminal_bg and effective_bg != (0.10, 0.10, 0.15):
-                    ctx.set_source_rgb(*effective_bg)
-                    ctx.rectangle(
-                        cell_x,
-                        row_y - self.font_size + 2.0,
-                        self.char_width + 0.5,
-                        self.line_height,
+                    # Custom cell background rectangle
+                    if effective_bg != self.theme.terminal_bg and effective_bg != (0.10, 0.10, 0.15):
+                        ctx.set_source_rgb(*effective_bg)
+                        ctx.rectangle(
+                            cell_x,
+                            row_y - self.font_size + 2.0,
+                            self.char_width + 0.5,
+                            self.line_height,
+                        )
+                        ctx.fill()
+
+                    # Character glyph rendering
+                    if cell.char and cell.char != " " and not cell.hidden:
+                        weight = cairo.FONT_WEIGHT_BOLD if cell.bold else cairo.FONT_WEIGHT_NORMAL
+                        slant = cairo.FONT_SLANT_ITALIC if cell.italic else cairo.FONT_SLANT_NORMAL
+                        ctx.select_font_face(self.font_family, slant, weight)
+                        ctx.set_font_size(self.font_size)
+
+                        if cell.dim:
+                            ctx.set_source_rgba(effective_fg[0], effective_fg[1], effective_fg[2], 0.5)
+                        else:
+                            ctx.set_source_rgb(*effective_fg)
+
+                        ctx.move_to(cell_x, row_y)
+                        ctx.show_text(cell.char)
+
+                    # Underline
+                    if cell.underline:
+                        ctx.set_source_rgb(*effective_fg)
+                        ctx.set_line_width(1.2)
+                        ctx.move_to(cell_x, row_y + 2.5)
+                        ctx.line_to(cell_x + self.char_width, row_y + 2.5)
+                        ctx.stroke()
+
+                    # Strikethrough
+                    if cell.strikethrough:
+                        ctx.set_source_rgb(*effective_fg)
+                        ctx.set_line_width(1.2)
+                        ctx.move_to(cell_x, row_y - (self.font_size * 0.35))
+                        ctx.line_to(cell_x + self.char_width, row_y - (self.font_size * 0.35))
+                        ctx.stroke()
+
+            # 5. Cursor Rendering
+            if term_state.cursor_visible and cursor_pulse > 0.05:
+                cur_r = term_state.cursor_row
+                cur_c = term_state.cursor_col
+                if cur_r < self.rows and cur_c < self.cols:
+                    cur_x = self.term_x + (cur_c * self.char_width)
+                    cur_y = self.term_y + (cur_r * self.line_height) + 2.0
+                    ctx.set_source_rgba(
+                        self.theme.accent_color[0],
+                        self.theme.accent_color[1],
+                        self.theme.accent_color[2],
+                        0.75 * cursor_pulse,
                     )
+                    ctx.rectangle(cur_x, cur_y, self.char_width, self.line_height - 2.0)
                     ctx.fill()
 
-                # Character glyph rendering
-                if cell.char and cell.char != " " and not cell.hidden:
-                    weight = cairo.FONT_WEIGHT_BOLD if cell.bold else cairo.FONT_WEIGHT_NORMAL
-                    slant = cairo.FONT_SLANT_ITALIC if cell.italic else cairo.FONT_SLANT_NORMAL
-                    ctx.select_font_face(self.font_family, slant, weight)
-                    ctx.set_font_size(self.font_size)
-
-                    if cell.dim:
-                        ctx.set_source_rgba(effective_fg[0], effective_fg[1], effective_fg[2], 0.5)
-                    else:
-                        ctx.set_source_rgb(*effective_fg)
-
-                    ctx.move_to(cell_x, row_y)
-                    ctx.show_text(cell.char)
-
-                # Underline
-                if cell.underline:
-                    ctx.set_source_rgb(*effective_fg)
-                    ctx.set_line_width(1.2)
-                    ctx.move_to(cell_x, row_y + 2.5)
-                    ctx.line_to(cell_x + self.char_width, row_y + 2.5)
-                    ctx.stroke()
-
-                # Strikethrough
-                if cell.strikethrough:
-                    ctx.set_source_rgb(*effective_fg)
-                    ctx.set_line_width(1.2)
-                    ctx.move_to(cell_x, row_y - (self.font_size * 0.35))
-                    ctx.line_to(cell_x + self.char_width, row_y - (self.font_size * 0.35))
-                    ctx.stroke()
-
-        # 5. Cursor Rendering
-        if term_state.cursor_visible and cursor_pulse > 0.05:
-            cur_r = term_state.cursor_row
-            cur_c = term_state.cursor_col
-            if cur_r < self.rows and cur_c < self.cols:
-                cur_x = self.term_x + (cur_c * self.char_width)
-                cur_y = self.term_y + (cur_r * self.line_height) + 2.0
-                ctx.set_source_rgba(
-                    self.theme.accent_color[0],
-                    self.theme.accent_color[1],
-                    self.theme.accent_color[2],
-                    0.75 * cursor_pulse,
-                )
-                ctx.rectangle(cur_x, cur_y, self.char_width, self.line_height - 2.0)
-                ctx.fill()
 
         # 6. Overlay Card (if active)
         if banner_card:

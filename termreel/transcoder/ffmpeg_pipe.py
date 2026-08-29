@@ -4,6 +4,7 @@ Zero-disk-I/O streaming frame transcoder via FFmpeg stdin pipes.
 
 import os
 import subprocess
+import threading
 import time
 from typing import Optional, Dict, Any, List
 
@@ -12,6 +13,7 @@ class FFmpegPipe:
     """
     Direct memory-to-video encoder piping raw BGRA frames directly to FFmpeg standard input.
     Supports H.264 MP4 (faststart), WebM (VP9), GIF, and thumbnail poster generation.
+    Thread-safe writes via lock.
     """
 
     def __init__(
@@ -36,8 +38,10 @@ class FFmpegPipe:
         self.frame_count = 0
         self.is_open = False
         self._start_time = 0.0
+        self._write_lock = threading.Lock()
 
         os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+
 
     def _build_command(self) -> List[str]:
         """Construct the FFmpeg command line based on requested output format."""
@@ -99,40 +103,43 @@ class FFmpegPipe:
 
     def write_frame(self, frame_bytes: bytes):
         """Write a single raw BGRA frame buffer into FFmpeg stdin."""
-        if not self.is_open or not self.process or not self.process.stdin:
-            raise RuntimeError("FFmpeg pipe is not open.")
+        with self._write_lock:
+            if not self.is_open or not self.process or not self.process.stdin:
+                raise RuntimeError("FFmpeg pipe is not open.")
 
-        try:
-            self.process.stdin.write(frame_bytes)
-            self.frame_count += 1
-        except (BrokenPipeError, OSError) as e:
-            stderr_out = ""
-            if self.process.stderr:
-                stderr_out = self.process.stderr.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"FFmpeg stdin pipe broken after {self.frame_count} frames: {stderr_out}") from e
+            try:
+                self.process.stdin.write(frame_bytes)
+                self.frame_count += 1
+            except (BrokenPipeError, OSError) as e:
+                stderr_out = ""
+                if self.process.stderr:
+                    stderr_out = self.process.stderr.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"FFmpeg stdin pipe broken after {self.frame_count} frames: {stderr_out}") from e
 
     def close(self):
         """Close stdin and wait for FFmpeg to finalize encoding."""
-        if not self.is_open:
-            return
+        with self._write_lock:
+            if not self.is_open:
+                return
 
-        self.is_open = False
-        stderr_text = ""
+            self.is_open = False
+            stderr_text = ""
 
-        if self.process:
-            if self.process.stdin:
-                try:
-                    self.process.stdin.flush()
-                    self.process.stdin.close()
-                except (BrokenPipeError, OSError):
-                    pass
+            if self.process:
+                if self.process.stdin:
+                    try:
+                        self.process.stdin.flush()
+                        self.process.stdin.close()
+                    except (BrokenPipeError, OSError):
+                        pass
 
-            _, stderr_bytes = self.process.communicate()
-            if stderr_bytes:
-                stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+                _, stderr_bytes = self.process.communicate()
+                if stderr_bytes:
+                    stderr_text = stderr_bytes.decode("utf-8", errors="replace")
 
-            if self.process.returncode != 0:
-                raise RuntimeError(f"FFmpeg encoding failed with exit code {self.process.returncode}: {stderr_text}")
+                if self.process.returncode != 0:
+                    raise RuntimeError(f"FFmpeg encoding failed with exit code {self.process.returncode}: {stderr_text}")
+
 
     def extract_poster(self, poster_path: str, timestamp_sec: float = 0.5) -> bool:
         """Extract a single high-resolution PNG poster frame from the rendered video."""

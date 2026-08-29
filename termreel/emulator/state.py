@@ -6,6 +6,7 @@ cursor tracking, alternate buffers, and buffer operations.
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Pattern, Union, Any
 import re
+import threading
 from termreel.emulator.colors import RGBColor, DEFAULT_PALETTE, ColorPalette
 
 
@@ -64,6 +65,7 @@ class TerminalState:
     """
     Complete 2D terminal grid maintaining ANSI character state,
     cursor coordinates, alternate screen buffers, and scrollback.
+    Thread-safe via re-entrant lock.
     """
 
     def __init__(
@@ -75,12 +77,14 @@ class TerminalState:
         palette: Optional[ColorPalette] = None,
         max_scrollback: int = 1000,
     ):
+        self._lock = threading.RLock()
         self.rows = max(1, rows)
         self.cols = max(1, cols)
         self.default_fg = default_fg
         self.default_bg = default_bg
         self.palette = palette or DEFAULT_PALETTE
         self.max_scrollback = max_scrollback
+
 
         self.cursor = Cursor(row=0, col=0, visible=True)
         self.primary_grid: List[List[CharCell]] = self._create_empty_grid()
@@ -441,3 +445,27 @@ class TerminalState:
                     start, end = match.span()
                     for c in range(start, min(end, self.cols)):
                         self.grid[r][c].char = mask_char
+
+    def snapshot(self) -> "TerminalState":
+        """Create a thread-safe point-in-time snapshot copy of the terminal grid and cursor."""
+        with self._lock:
+            snap = TerminalState(
+                rows=self.rows,
+                cols=self.cols,
+                default_fg=self.default_fg,
+                default_bg=self.default_bg,
+                palette=self.palette,
+                max_scrollback=self.max_scrollback,
+            )
+            snap.in_alt_buffer = self.in_alt_buffer
+            snap.cursor = Cursor(
+                row=self.cursor.row,
+                col=self.cursor.col,
+                visible=self.cursor.visible,
+                saved_row=self.cursor.saved_row,
+                saved_col=self.cursor.saved_col,
+            )
+            snap.primary_grid = [[cell.copy() for cell in row] for row in self.primary_grid]
+            snap.alt_grid = [[cell.copy() for cell in row] for row in self.alt_grid]
+            return snap
+

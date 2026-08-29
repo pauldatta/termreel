@@ -88,7 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
     # 8. info
     subparsers.add_parser("info", help="Display environment, dependencies, and codec status")
 
+    # 9. test
+    test_parser = subparsers.add_parser("test", help="Run the test suite concurrently with high-speed async execution")
+    test_parser.add_argument("-w", "--workers", type=int, default=8, help="Number of concurrent worker threads (default: 8)")
+    test_parser.add_argument("-d", "--dir", default="tests", help="Directory containing test cases (default: tests)")
+
     return parser
+
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -326,6 +332,11 @@ def cmd_info() -> int:
     return 0
 
 
+def cmd_test(args: argparse.Namespace) -> int:
+    from termreel.testing import run_parallel_tests
+    return run_parallel_tests(start_dir=args.dir, max_workers=args.workers)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -350,8 +361,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_themes()
     elif args.subcommand == "info":
         return cmd_info()
+    elif args.subcommand == "test":
+        return cmd_test(args)
 
     return 0
+
 
 
 if __name__ == "__main__":
