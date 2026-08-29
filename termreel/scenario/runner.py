@@ -48,6 +48,9 @@ class ScenarioReport:
     cast_file: Optional[str] = None
     poster_file: Optional[str] = None
     error_message: Optional[str] = None
+    conversation_id: Optional[str] = None
+    workspace_dir: Optional[str] = None
+
 
 
 class ScenarioRunner:
@@ -122,12 +125,17 @@ class ScenarioRunner:
         self._temp_dir: Optional[str] = None
         self._work_dir: str = os.getcwd()
         self._last_captured_ansi = ""
+        self.active_conversation_id: Optional[str] = self.manifest.environment.conversation_id
 
         self._init_triggers()
 
     def _setup_hook_listeners(self):
         """Wire hook lifecycle events to dynamic UI telemetry."""
         def _on_hook_event(ev: HookEvent):
+            if ev.conversation_id:
+                with self._lock:
+                    self.active_conversation_id = ev.conversation_id
+
             norm = HookEventType.from_string(ev.event_type).value if ev.event_type else ""
             if norm == HookEventType.PRE_TOOL_USE.value and ev.tool_name:
                 with self._lock:
@@ -152,6 +160,7 @@ class ScenarioRunner:
                     self._status_pill = "● IDLE"
 
         self.hook_bridge.add_listener(_on_hook_event)
+
 
     def _log(self, msg: str):
         if self.verbose:
@@ -230,7 +239,11 @@ class ScenarioRunner:
 
     def _setup_environment(self):
         """Set up working directory, temporary workspace, and run setup commands."""
-        if self.manifest.environment.create_temp_workspace:
+        if self.manifest.environment.workspace_path:
+            self._work_dir = os.path.abspath(self.manifest.environment.workspace_path)
+            os.makedirs(self._work_dir, exist_ok=True)
+            self._log(f"Using specified workspace directory: {self._work_dir}")
+        elif self.manifest.environment.create_temp_workspace:
             self._temp_dir = tempfile.mkdtemp(prefix=self.manifest.environment.temp_workspace_prefix)
             self._work_dir = self._temp_dir
             self._log(f"Created temporary workspace at: {self._work_dir}")
@@ -280,11 +293,14 @@ class ScenarioRunner:
                 pass
 
         if self._temp_dir and os.path.exists(self._temp_dir):
-            try:
-                shutil.rmtree(self._temp_dir)
-                self._log(f"Cleaned up temporary workspace: {self._temp_dir}")
-            except Exception:
-                pass
+            if self.manifest.environment.preserve_workspace:
+                self._log(f"Preserving workspace directory for resumption: {self._temp_dir}")
+            else:
+                try:
+                    shutil.rmtree(self._temp_dir)
+                    self._log(f"Cleaned up temporary workspace: {self._temp_dir}")
+                except Exception:
+                    pass
 
     def _capture_loop(self):
         """Continuous frame rasterization and video streaming loop."""
@@ -425,6 +441,8 @@ class ScenarioRunner:
             cast_file=self.manifest.metadata.cast_output,
             poster_file=self.manifest.metadata.poster_output,
             error_message=error_msg,
+            conversation_id=self.active_conversation_id,
+            workspace_dir=self._work_dir,
         )
 
     def _execute_step(self, step: TimelineStep, index: int):
@@ -450,6 +468,18 @@ class ScenarioRunner:
             if "env" in params:
                 env_vars.update(params["env"])
 
+            # Check for session/conversation resumption
+            should_resume = bool(params.get("resume", self.manifest.environment.resume))
+            conv_id = params.get("conversation_id", self.manifest.environment.conversation_id)
+
+            if should_resume or conv_id:
+                if ("agy" in cmd or cmd.startswith("agy")) and "--continue" not in cmd and "-c" not in cmd and "--conversation" not in cmd:
+                    if conv_id:
+                        cmd = f"{cmd} --conversation {conv_id}"
+                    else:
+                        cmd = f"{cmd} -c"
+                    self._log(f"Resuming CLI session with: {cmd}")
+
             if self.supervisor:
                 self.supervisor.terminate()
 
@@ -461,6 +491,7 @@ class ScenarioRunner:
                 cols=self.renderer.cols,
                 env=env_vars,
             )
+
             self.supervisor.start()
             self.monitor.supervisor = self.supervisor
 

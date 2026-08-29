@@ -1,7 +1,4 @@
-"""
-ANSI/VT100/Xterm escape sequence parser and state stream processor.
-"""
-
+import codecs
 import re
 from typing import Union, List, Optional
 from termreel.emulator.state import TerminalState
@@ -25,14 +22,15 @@ class ANSIParser:
     def __init__(self, state: TerminalState):
         self.state = state
         self.window_title = ""
+        self._utf8_decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     def feed(self, data: Union[str, bytes]):
         """Feed text or byte chunks into the ANSI parser."""
         if isinstance(data, bytes):
-            # Replace invalid UTF-8 with Unicode replacement char
-            text = data.decode("utf-8", errors="replace")
+            text = self._utf8_decoder.decode(data, final=False)
         else:
             text = data
+
 
         i = 0
         n = len(text)

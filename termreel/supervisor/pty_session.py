@@ -89,39 +89,59 @@ class PtySupervisor(BaseSupervisor):
     def start(self) -> None:
         """Allocate PTY, configure environment, and launch child process."""
         self.master_fd, self.slave_fd = pty.openpty()
-        self._set_winsize(self.slave_fd, self.rows, self.cols)
+        try:
+            self._set_winsize(self.slave_fd, self.rows, self.cols)
 
-        # Set master_fd to non-blocking mode
-        fl = fcntl.fcntl(self.master_fd, fcntl.F_GETFL)
-        fcntl.fcntl(self.master_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            # Set master_fd to non-blocking mode
+            fl = fcntl.fcntl(self.master_fd, fcntl.F_GETFL)
+            fcntl.fcntl(self.master_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
-        merged_env = os.environ.copy()
-        merged_env.update(self.env)
-        merged_env["TERM"] = "xterm-256color"
-        merged_env["COLORTERM"] = "truecolor"
-        merged_env["COLUMNS"] = str(self.cols)
-        merged_env["LINES"] = str(self.rows)
+            merged_env = os.environ.copy()
+            merged_env.update(self.env)
+            merged_env["TERM"] = "xterm-256color"
+            merged_env["COLORTERM"] = "truecolor"
+            merged_env["COLUMNS"] = str(self.cols)
+            merged_env["LINES"] = str(self.rows)
 
-        # Launch child process attached to slave PTY
-        self.process = subprocess.Popen(
-            self.command,
-            shell=isinstance(self.command, str),
-            stdin=self.slave_fd,
-            stdout=self.slave_fd,
-            stderr=self.slave_fd,
-            cwd=self.cwd,
-            env=merged_env,
-            preexec_fn=os.setsid,
-            close_fds=True,
-        )
+            # Launch child process attached to slave PTY
+            self.process = subprocess.Popen(
+                self.command,
+                shell=isinstance(self.command, str),
+                stdin=self.slave_fd,
+                stdout=self.slave_fd,
+                stderr=self.slave_fd,
+                cwd=self.cwd,
+                env=merged_env,
+                preexec_fn=os.setsid,
+                close_fds=True,
+            )
+        except Exception:
+            if self.slave_fd is not None:
+                try:
+                    os.close(self.slave_fd)
+                except OSError:
+                    pass
+                self.slave_fd = None
+            if self.master_fd is not None:
+                try:
+                    os.close(self.master_fd)
+                except OSError:
+                    pass
+                self.master_fd = None
+            raise
 
         # Close slave fd in parent process
-        os.close(self.slave_fd)
-        self.slave_fd = None
+        if self.slave_fd is not None:
+            try:
+                os.close(self.slave_fd)
+            except OSError:
+                pass
+            self.slave_fd = None
 
         self._running = True
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
+
 
     def _reader_loop(self):
         """Asynchronously reads data from master PTY fd and feeds the ANSI parser."""
@@ -203,8 +223,10 @@ class PtySupervisor(BaseSupervisor):
             except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
                 try:
                     os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                    self.process.wait(timeout=1.0)
                 except Exception:
                     pass
+
 
         if self.master_fd is not None:
             try:

@@ -1,17 +1,15 @@
 ---
 name: termreel
-description: Automate, record, and synthesize high-fidelity terminal videos (MP4/WebM/GIF) and Asciinema (.cast) logs from interactive CLIs, TUIs, and AI coding agents (such as agy, git, gcloud, gh) using pseudo-terminals (PTY/tmux), natural typing simulation, reactive triggers, and vector rendering. Use when creating CLI walkthroughs, recording TUI demos, capturing interactive AI agent sessions, or generating deterministic video proof artifacts.
+description: Automate, record, and synthesize high-fidelity terminal videos (MP4/WebM/GIF) and Asciinema (.cast) logs from interactive CLIs, TUIs, and AI coding agents (such as agy, git, gcloud, gh) using pseudo-terminals (PTY/tmux), natural typing simulation, reactive triggers, and vector rendering. Use when creating CLI walkthroughs, recording TUI demos, capturing interactive AI agent sessions, handling long-running multi-step workflows, or generating deterministic video proof artifacts.
 ---
 
 # TermReel: Universal Terminal Recording & Video Synthesis Engine
 
-TermReel (`termreel` / `reccli`) is a headless recording harness and deterministic video synthesis engine. It runs CLI tools and interactive agents in real pseudo-terminals (PTY/tmux), injects human-like keystrokes, reacts to live screen events (such as workspace trust modals and permission requests), and streams pixel-perfect H.264 MP4 videos, animated GIFs, and Asciinema v2 (`.cast`) event streams directly into FFmpeg with zero intermediate disk I/O.
+TermReel (`termreel` / `reccli`) is a headless recording harness and deterministic video synthesis engine. It runs CLI tools and autonomous AI agents in real pseudo-terminals (PTY/tmux), injects human-like keystrokes, reacts to live screen events (such as workspace trust modals and permission requests), and streams pixel-perfect H.264 MP4 videos, animated GIFs, and Asciinema v2 (`.cast`) event streams directly into FFmpeg with zero intermediate disk I/O.
 
 ---
 
 ## 1. Quick Workflow for Agents
-
-When tasked with recording a CLI or creating a video demonstration:
 
 ```
 ┌─────────────────────────┐     ┌──────────────────────────┐     ┌─────────────────────────┐
@@ -43,173 +41,204 @@ termreel record scenarios/agy_workshop.yaml -o output/agy_workshop.mp4 --cast ou
 
 ---
 
-## 2. CLI Reference & Subcommands
+## 2. Long-Running & Multi-Step Agent Workflows
 
-| Subcommand | Description | Example Usage |
-| :--- | :--- | :--- |
-| `termreel probe <cli>` | Discover CLI version, commands, and permissions | `termreel probe agy` |
-| `termreel generate <cli>` | Scaffold a validated YAML scenario manifest | `termreel generate agy -o demo.yaml` |
-| `termreel record <yml>` | Synthesize video from a declarative scenario YAML | `termreel record demo.yaml -o out.mp4` |
-| `termreel exec "<cmd>"` | Quick one-shot command recording | `termreel exec "git status" -o status.mp4` |
-| `termreel cast2video <.cast>` | Transcode Asciinema v2 `.cast` file to MP4/GIF | `termreel cast2video log.cast -o replay.mp4` |
-| `termreel validate <yml>` | Validate YAML manifest schema before recording | `termreel validate demo.yaml` |
-| `termreel themes` | List all 9 visual themes and color palettes | `termreel themes` |
-| `termreel info` | Check PyCairo, Tmux, FFmpeg, and environment status | `termreel info` |
+When recording agents that operate over long horizons (15 minutes to 4+ hours) with many sequential steps:
+
+### A. Session Resumption & Conversation Checkpointing
+Instead of re-running an entire workflow from step 0 when adding a new recording chapter, attach to existing conversations:
+
+```yaml
+version: "1.0"
+environment:
+  resume: true                                # Automatically passes -c / --continue to agy
+  conversation_id: "conv-123456"              # Or resume a specific conversation ID
+  workspace_path: "/tmp/termreel_ws_staging"  # Attach to existing workspace
+  preserve_workspace: true                    # Do not delete workspace on teardown
+
+timeline:
+  - launch:
+      command: "agy"
+      resume: true
+  - type:
+      text: "Now run the full integration test suite and generate a summary report"
+      send_key: "Enter"
+  - wait_for_idle:
+      timeout: 300.0
+      reading_pause: 3.0
+```
+
+CLI flags for session resumption:
+```bash
+# Resume latest conversation in workspace
+termreel record scenario.yaml --resume
+
+# Resume specific conversation ID and attach to workspace
+termreel record scenario.yaml --conversation <id> --workspace /path/to/ws
+```
 
 ---
 
-## 3. Scenario Manifest Specification (`scenario.yaml`)
+### B. Adaptive Watchdog & Agent Anti-Freeze Nudging
+Agents sometimes hang on unhandled pagers (`less`), prompt confirmations, or stalled reasoning loops. Configure heartbeat timeouts to automatically nudge the agent:
 
-TermReel manifests are declarative YAML documents defining the recording metadata, environment sandbox, permissions, reactive triggers, and step-by-step timeline.
+1. **Level 1 (Soft Enter)**: Injects `\r` after inactivity timeout (e.g. 180s) to submit uncommitted readline buffers.
+2. **Level 2 (Pager Escape)**: Injects `q` followed by `Escape` to break out of accidental `git log` or `less` traps.
+3. **Level 3 (AI Continuation)**: Injects `"Please continue with the remaining task steps"` to re-engage stalled reasoning turns.
+
+---
+
+### C. Telemetry-First Strategy for Multi-Hour Sessions
+For jobs running 1+ hours, avoid encoding hundreds of gigabytes of static thinking frames:
+
+1. **Capture Lightweight Telemetry First**:
+   ```bash
+   termreel record scenario.yaml --cast output/long_session.cast --quiet
+   ```
+2. **Synthesize Video Post-Hoc with Hyperlapse**:
+   ```bash
+   # Re-render with 4x-10x playback speed and condensed idle frames
+   termreel cast2video output/long_session.cast -o output/fast_summary.mp4 --speed 4.0 --theme tokyo-night
+   ```
+
+---
+
+## 3. Best Practices from Real-World Experiments
+
+### 1. Avoid Print / YOLO Modes for Demonstrations
+- **Don't** use `-p` or `--dangerously-skip-permissions` when recording UI demos.
+- **Do** run in pure interactive TUI mode with TermReel's declarative permissions and reactive prompt interceptors. This produces authentic videos showing the real CLI badges, progress indicators, and interactive choices without stalling.
+
+### 2. Use Dynamic Idle Detection Instead of Static Sleep
+- **Don't** hardcode `sleep: 30.0` (it causes either premature cutoffs or wasted dead air).
+- **Do** use `wait_for_idle: { timeout: 45.0, reading_pause: 2.5 }`. TermReel observes the terminal screen and hook events, waking up immediately when the agent finishes, and adds a natural reading pause for human viewers.
+
+### 3. Structure Multi-Step Demos with Chapter Cards
+Overlay vector announcement cards (`show_card`) before each major phase:
+```yaml
+timeline:
+  - show_card:
+      tag: "Phase 1 / 3"
+      title: "Discovery & Analysis"
+      desc: "Agent scans codebase architecture and identifies target functions"
+      duration: 2.5
+```
+
+### 4. Provide Visual Context with Status Bars
+Set informative status bar metadata so viewers know the active tool, branch, and encoding resolution:
+```yaml
+metadata:
+  statusbar_left: "Google Antigravity | Refactoring app.py"
+  statusbar_right: "TermReel HD (1280x720@30fps)"
+```
+Dynamically update it during execution with `set_statusbar`:
+```yaml
+- set_statusbar:
+    left: "Running Pytest Suite..."
+    right: "Phase 3/3"
+```
+
+### 5. Always Redact Secrets and Tokens
+Built-in redactors automatically mask Google API keys, OAuth tokens (`ya29...`), and GitHub PATs (`ghp_...`). Add custom domain or IP regexes under `redactions`:
+```yaml
+redactions:
+  - "internal-host-[0-9]+\\.example\\.corp"
+  - "SECRET_KEY=[a-zA-Z0-9]+"
+```
+
+---
+
+## 4. Full Scenario Manifest Reference
 
 ```yaml
 version: "1.0"
 
 metadata:
-  title: "Antigravity CLI Interactive Session"
-  subtitle: "Module 1: Code Refactoring & Testing"
-  output: "output/agy_demo.mp4"
-  poster_output: "output/agy_demo_poster.png"
-  cast_output: "output/agy_demo.cast"
-  resolution: [1280, 720]       # 720p or 1080p [1920, 1080]
-  fps: 30                       # 24, 30, or 60
-  theme: "catppuccin-mocha"     # catppuccin-mocha, dracula, tokyo-night, nord, matrix, etc.
+  title: "Interactive Agent Workflow"
+  subtitle: "Full-Stack Refactoring & Automated Verification"
+  output: "output/agent_session.mp4"
+  cast_output: "output/agent_session.cast"
+  poster_output: "output/agent_session_poster.png"
+  resolution: [1280, 720]
+  fps: 30
+  theme: "catppuccin-mocha"
   font: "DejaVu Sans Mono"
   font_size: 14.5
-  statusbar_left: "Antigravity CLI | UTF-8 | Real PTY"
+  statusbar_left: "Antigravity CLI | UTF-8"
   statusbar_right: "TermReel HD"
 
 environment:
-  create_temp_workspace: true   # Isolates execution in a temporary Git workspace
-  temp_workspace_prefix: "termreel_agy_demo_"
-  auto_trust: true              # Automatically trusts the workspace for agy
+  create_temp_workspace: true
+  temp_workspace_prefix: "termreel_ws_"
+  auto_trust: true
+  preserve_workspace: false
   setup_commands:
     - "git init"
     - "git config user.name 'Paul Datta'"
     - "git config user.email 'pkdatta2000@gmail.com'"
-    - "echo 'def calculate_total(prices): return sum(prices)' > app.py"
+    - "echo 'def run(): pass' > main.py"
     - "git add . && git commit -m 'Initial commit'"
 
 permissions:
   auto_approve: true
-  allow_commands:
-    - "python3"
-    - "git"
-    - "pytest"
-  allow_tools:
-    - "run_command"
-    - "write_to_file"
-    - "read_file"
-    - "grep_search"
+  allow_commands: ["python3", "pytest", "git"]
+  allow_tools: ["run_command", "write_to_file", "read_file"]
 
 triggers:
-  # Auto-confirm workspace trust dialogs
   - on_match: "Do you trust the contents of this project\\?|Yes, I trust"
     action: "Enter"
     once: true
-
-  # Intercept interactive permission requests and confirm cleanly
   - on_match: "Requesting permission for:|Do you want to proceed\\?|\\[y/N\\]"
     action:
       type: "send_key"
       value: "Enter"
-      delay_before: 0.8         # Keeps dialog visible on screen for natural viewing
+      delay_before: 0.8
       delay_after: 0.3
     once: false
     cooldown: 1.5
     max_firings: 15
 
 timeline:
-  # 1. Opening Chapter Card
   - show_card:
-      tag: "Module 1"
-      title: "Interactive Codebase Refactoring"
-      desc: "Demonstrating Antigravity CLI in pure interactive TUI mode"
-      duration: 2.5
+      tag: "Demo"
+      title: "Interactive Agent Session"
+      duration: 2.0
 
-  # 2. Launch Interactive Tool
   - launch:
       command: "agy"
       wait_for_idle: true
-      timeout: 25.0
+      timeout: 20.0
 
-  # 3. Simulate Human Typing
   - type:
-      text: "Add calculate_tax(amount, rate) to app.py and write a test in main"
-      speed: 0.035              # Typing speed in seconds per char (with realistic micro-jitter)
-      jitter: 0.015
+      text: "Implement a robust caching layer in cache.py and write unit tests"
+      speed: 0.035
       send_key: "Enter"
 
-  # 4. Wait for Model Completion Without Brittle Sleeps
   - wait_for_idle:
-      timeout: 45.0
-      reading_pause: 3.0        # Pause after generation completes so viewer can read
+      timeout: 60.0
+      reading_pause: 3.0
 
-  # 5. Exit Interactive Tool
   - type:
       text: "/exit"
-      speed: 0.04
       send_key: "Enter"
-      pause: 1.5
+      pause: 1.0
 
-  # 6. Run Shell Verification Command
   - run_shell:
-      command: "git diff"
-      speed: 0.03
-      pause: 2.5
+      command: "pytest -v"
+      pause: 2.0
 
-  # 7. Closing Chapter Card
   - show_card:
       tag: "Complete"
-      title: "Session Finished"
-      desc: "Pixel-perfect MP4 rendered via TermReel zero-disk pipeline"
-      duration: 2.5
+      title: "Verification Succeeded"
+      duration: 2.0
 ```
 
 ---
 
-## 4. Timeline Action Reference
+## 5. Parallel Test Execution
 
-| Timeline Action | Description | Parameters |
-| :--- | :--- | :--- |
-| `show_card` | Renders a styled vector overlay card | `tag`, `title`, `desc`, `duration` |
-| `launch` | Spawns a process in the PTY/tmux session | `command`, `wait_for_idle`, `timeout` |
-| `type` | Types text with natural keystroke cadence | `text`, `speed`, `jitter`, `typos`, `send_key`, `pause` |
-| `send_key` | Sends a control or navigation key | `key` (`Enter`, `Up`, `Down`, `C-c`, `Escape`, `Tab`) |
-| `paste` | Bracketed paste for large multiline snippets | `text`, `pause` |
-| `run_shell` | Types a command, presses Enter, and waits | `command`, `speed`, `pause` |
-| `wait_for_idle` | Non-blocking wait until CLI returns to ready prompt | `timeout`, `idle_pattern`, `reading_pause` |
-| `wait_for_text` | Waits until specific text appears on screen | `pattern`, `timeout` |
-| `assert` | Asserts text presence (fails scenario if absent) | `pattern`, `timeout` |
-| `select_choice` | Navigates down and selects a choice in a menu | `choice` (1-indexed int), `delay` |
-| `set_statusbar` | Dynamically updates bottom status bar metadata | `left`, `right` |
-| `pause` | Freezes the recording stream for a duration | `duration` (float seconds) |
-
----
-
-## 5. Visual Themes & Customization
-
-TermReel includes 9 built-in palettes optimized for vector contrast:
-- `catppuccin-mocha` (Default dark pastel theme)
-- `catppuccin-latte` (Clean light theme)
-- `tokyo-night` (Modern deep blue/cyan theme)
-- `dracula` (High-contrast purple/magenta theme)
-- `nord` (Arctic blue pastel theme)
-- `one-dark` (Atom One Dark theme)
-- `monokai` (Vibrant yellow/green theme)
-- `github-dark` (Minimalist GitHub dark theme)
-- `matrix` (Phosphor green HUD theme)
-
-To inspect theme colors in your terminal:
+Run the complete test suite concurrently:
 ```bash
-termreel themes
+# Run all tests across 8 async worker threads
+termreel test -w 8
 ```
-
----
-
-## 6. Best Practices for Interactive AI Agents (`agy`, `gemini`, etc.)
-
-1. **Avoid YOLO / Print Mode**: Do NOT use `-p` or `--dangerously-skip-permissions` if you want to showcase the authentic TUI. TermReel's reactive triggers and lifecycle hooks handle permissions smoothly.
-2. **Use `wait_for_idle`**: AI models take variable time to stream tokens. Never use arbitrary `pause: 15.0`. Always use `wait_for_idle: { timeout: 45.0, reading_pause: 3.0 }`.
-3. **Use Temporary Workspaces**: Set `environment.create_temp_workspace: true` so tests, Git operations, and agent edits run in a safe, disposable directory without dirtying the host workspace.
-4. **Redact Secrets**: Built-in regex filters mask API keys (`AIza...`), OAuth tokens (`ya29...`), GitHub PATs (`ghp_...`), and Bearer authorization headers automatically.

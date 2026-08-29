@@ -1,62 +1,77 @@
 """
-Zero-disk-I/O streaming frame transcoder via FFmpeg stdin pipes.
+Streaming video transcoder pipe driving FFmpeg in real-time with zero intermediate disk I/O.
+Features non-blocking background stderr draining to prevent pipe deadlocks and timed process reaping.
 """
 
+from collections import deque
 import os
+import shutil
 import subprocess
 import threading
 import time
-from typing import Optional, Dict, Any, List
+from typing import List, Optional
+from termreel.exceptions import TranscoderError, FFmpegDeadlockError
 
 
 class FFmpegPipe:
     """
-    Direct memory-to-video encoder piping raw BGRA frames directly to FFmpeg standard input.
-    Supports H.264 MP4 (faststart), WebM (VP9), GIF, and thumbnail poster generation.
-    Thread-safe writes via lock.
+    Manages a continuous streaming pipe to an FFmpeg subprocess.
+    Receives raw BGRA vector image buffers via stdin and transcodes directly to MP4/WebM/GIF.
     """
 
     def __init__(
         self,
         output_file: str,
-        width: int = 1280,
-        height: int = 720,
+        width: int,
+        height: int,
         fps: int = 30,
-        codec: str = "auto",
         crf: int = 20,
         preset: str = "medium",
+        codec: Optional[str] = None,
     ):
         self.output_file = output_file
         self.width = width
         self.height = height
         self.fps = fps
-        self.codec = codec
         self.crf = crf
         self.preset = preset
+        self.codec = codec
 
         self.process: Optional[subprocess.Popen] = None
-        self.frame_count = 0
-        self.is_open = False
-        self._start_time = 0.0
+        self.is_open: bool = False
+        self.frame_count: int = 0
+        self._start_time: float = 0.0
         self._write_lock = threading.Lock()
+        self._stderr_buffer: deque = deque(maxlen=100)
+        self._stderr_thread: Optional[threading.Thread] = None
 
-        os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+    def __enter__(self) -> "FFmpegPipe":
+        self.open()
+        return self
 
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def _build_command(self) -> List[str]:
-        """Construct the FFmpeg command line based on requested output format."""
-        ext = os.path.splitext(self.output_file)[1].lower()
+        """Construct the FFmpeg command line arguments for pixel-perfect streaming."""
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            raise TranscoderError("ffmpeg binary not found in system PATH.")
 
-        # Input rawvideo configuration
+        # Ensure target directory exists
+        os.makedirs(os.path.dirname(os.path.abspath(self.output_file)), exist_ok=True)
+
+        _, ext = os.path.splitext(self.output_file.lower())
+
         cmd = [
-            "ffmpeg",
-            "-y",  # Overwrite output without asking
+            ffmpeg_bin,
+            "-y",
             "-f", "rawvideo",
             "-vcodec", "rawvideo",
             "-s", f"{self.width}x{self.height}",
             "-pix_fmt", "bgra",
             "-r", str(self.fps),
-            "-i", "-",  # Read from stdin
+            "-i", "-",
         ]
 
         if ext == ".webm" or self.codec == "vp9":
@@ -67,13 +82,11 @@ class FFmpegPipe:
                 self.output_file,
             ])
         elif ext == ".gif" or self.codec == "gif":
-            # Direct GIF encoding with palette filter
             cmd.extend([
                 "-vf", f"fps={self.fps},split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5",
                 self.output_file,
             ])
         else:
-            # Default to H.264 MP4 with faststart for instant web streaming
             cmd.extend([
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",
@@ -85,45 +98,62 @@ class FFmpegPipe:
 
         return cmd
 
+    def _drain_stderr(self):
+        """Asynchronously drain stderr pipe to prevent OS buffer deadlocks."""
+        if not self.process or not self.process.stderr:
+            return
+        try:
+            for line in iter(self.process.stderr.readline, b""):
+                if line:
+                    decoded = line.decode("utf-8", errors="replace").strip()
+                    self._stderr_buffer.append(decoded)
+        except Exception:
+            pass
+
     def open(self):
-        """Spawn the FFmpeg subprocess with standard input pipe."""
+        """Spawn the FFmpeg subprocess with standard input pipe and async stderr drainer."""
         if self.is_open:
             return
 
         cmd = self._build_command()
-        self.process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except Exception as e:
+            raise TranscoderError(f"Failed to spawn FFmpeg process: {e}") from e
+
         self.is_open = True
         self.frame_count = 0
         self._start_time = time.time()
+
+        # Start non-blocking stderr drainer thread
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._stderr_thread.start()
 
     def write_frame(self, frame_bytes: bytes):
         """Write a single raw BGRA frame buffer into FFmpeg stdin."""
         with self._write_lock:
             if not self.is_open or not self.process or not self.process.stdin:
-                raise RuntimeError("FFmpeg pipe is not open.")
+                raise TranscoderError("FFmpeg pipe is not open.")
 
             try:
                 self.process.stdin.write(frame_bytes)
                 self.frame_count += 1
             except (BrokenPipeError, OSError) as e:
-                stderr_out = ""
-                if self.process.stderr:
-                    stderr_out = self.process.stderr.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"FFmpeg stdin pipe broken after {self.frame_count} frames: {stderr_out}") from e
+                stderr_summary = "\n".join(list(self._stderr_buffer)[-10:])
+                raise TranscoderError(f"FFmpeg stdin pipe broken after {self.frame_count} frames.\nStderr:\n{stderr_summary}") from e
 
     def close(self):
-        """Close stdin and wait for FFmpeg to finalize encoding."""
+        """Close stdin and wait for FFmpeg to finalize encoding with timed process reaping."""
         with self._write_lock:
             if not self.is_open:
                 return
 
             self.is_open = False
-            stderr_text = ""
 
             if self.process:
                 if self.process.stdin:
@@ -133,13 +163,23 @@ class FFmpegPipe:
                     except (BrokenPipeError, OSError):
                         pass
 
-                _, stderr_bytes = self.process.communicate()
-                if stderr_bytes:
-                    stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+                try:
+                    self.process.wait(timeout=10.0)
+                except subprocess.TimeoutExpired:
+                    self.process.terminate()
+                    try:
+                        self.process.wait(timeout=3.0)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill()
+                        self.process.wait(timeout=2.0)
+                    raise FFmpegDeadlockError("FFmpeg failed to finalize container within timeout; process killed.")
+
+                if self._stderr_thread and self._stderr_thread.is_alive():
+                    self._stderr_thread.join(timeout=1.0)
 
                 if self.process.returncode != 0:
-                    raise RuntimeError(f"FFmpeg encoding failed with exit code {self.process.returncode}: {stderr_text}")
-
+                    stderr_summary = "\n".join(list(self._stderr_buffer)[-15:])
+                    raise TranscoderError(f"FFmpeg encoding failed with exit code {self.process.returncode}:\n{stderr_summary}")
 
     def extract_poster(self, poster_path: str, timestamp_sec: float = 0.5) -> bool:
         """Extract a single high-resolution PNG poster frame from the rendered video."""
@@ -156,17 +196,5 @@ class FFmpegPipe:
             "-q:v", "2",
             poster_path,
         ]
-        res = subprocess.run(cmd, capture_output=True)
+        res = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True)
         return res.returncode == 0 and os.path.exists(poster_path)
-
-    @property
-    def duration(self) -> float:
-        """Calculate recorded duration in seconds based on frame count."""
-        return self.frame_count / float(self.fps) if self.fps > 0 else 0.0
-
-    def __enter__(self) -> "FFmpegPipe":
-        self.open()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()

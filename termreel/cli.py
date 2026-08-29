@@ -41,7 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument("--backend", choices=["auto", "tmux", "pty"], default="auto", help="PTY backend (default: auto)")
     record_parser.add_argument("--cast", help="Export Asciinema v2 .cast log to specified path")
     record_parser.add_argument("--poster", help="Export poster thumbnail image to specified path")
+    record_parser.add_argument("-c", "--continue", "--resume", dest="resume", action="store_true", help="Resume the latest conversation or session in the workspace")
+    record_parser.add_argument("--conversation", dest="conversation_id", help="Resume a specific previous conversation by ID")
+    record_parser.add_argument("--workspace", dest="workspace_path", help="Attach to an existing workspace directory instead of creating a temporary one")
+    record_parser.add_argument("--preserve-workspace", action="store_true", help="Preserve temporary workspace directory after scenario execution for future session resumption")
     record_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress verbose logging")
+
 
     # 2. exec
     exec_parser = subparsers.add_parser("exec", help="Directly record a single CLI command to video")
@@ -109,6 +114,15 @@ def cmd_record(args: argparse.Namespace) -> int:
         if args.poster:
             manifest.metadata.poster_output = args.poster
 
+        if getattr(args, "resume", False):
+            manifest.environment.resume = True
+        if getattr(args, "conversation_id", None):
+            manifest.environment.conversation_id = args.conversation_id
+        if getattr(args, "workspace_path", None):
+            manifest.environment.workspace_path = args.workspace_path
+        if getattr(args, "preserve_workspace", False):
+            manifest.environment.preserve_workspace = True
+
         runner = ScenarioRunner(
             manifest=manifest,
             output_override=args.output,
@@ -120,10 +134,15 @@ def cmd_record(args: argparse.Namespace) -> int:
         report = runner.run()
         if report.status == "pass":
             print(f"✨ Successfully generated: {report.output_file}")
+            if report.conversation_id:
+                print(f"📌 Active Conversation ID: {report.conversation_id}")
+            if report.workspace_dir:
+                print(f"📁 Workspace Directory: {report.workspace_dir}")
             return 0
         else:
             print(f"❌ Recording failed: {report.error_message}", file=sys.stderr)
             return 1
+
     except Exception as e:
         print(f"❌ Execution error: {e}", file=sys.stderr)
         return 1

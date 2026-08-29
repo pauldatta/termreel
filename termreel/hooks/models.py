@@ -135,6 +135,7 @@ class HookEvent:
     tool_args: Optional[Dict[str, Any]] = None
     tool_output: Optional[Any] = None
     session_id: Optional[str] = None
+    conversation_id: Optional[str] = None
     prompt: Optional[str] = None
     response: Optional[str] = None
     decision: Optional[str] = None
@@ -157,6 +158,7 @@ class HookEvent:
             "tool_args": self.tool_args,
             "tool_output": self.tool_output,
             "session_id": self.session_id,
+            "conversation_id": self.conversation_id or self.session_id,
             "prompt": self.prompt,
             "response": self.response,
             "decision": self.decision,
@@ -171,6 +173,7 @@ class HookEvent:
             "model_name": self.model_name,
             "metadata": self.metadata,
         }
+
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
@@ -209,7 +212,9 @@ class HookEvent:
             tool_args=tool_args,
             tool_output=data.get("tool_output") or data.get("toolOutput") or data.get("output"),
             session_id=session_id,
+            conversation_id=session_id,
             prompt=data.get("prompt") or data.get("user_prompt") or data.get("userPrompt"),
+
             response=data.get("response") or data.get("model_response") or data.get("modelResponse"),
             decision=data.get("decision"),
             reason=reason,

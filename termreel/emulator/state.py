@@ -10,7 +10,7 @@ import threading
 from termreel.emulator.colors import RGBColor, DEFAULT_PALETTE, ColorPalette
 
 
-@dataclass
+@dataclass(slots=True)
 class CharCell:
     """Represents a single character cell in the 2D terminal grid."""
     char: str = " "
@@ -51,7 +51,7 @@ class CharCell:
         )
 
 
-@dataclass
+@dataclass(slots=True)
 class Cursor:
     """Tracks cursor position and state."""
     row: int = 0
@@ -59,6 +59,7 @@ class Cursor:
     visible: bool = True
     saved_row: int = 0
     saved_col: int = 0
+
 
 
 class TerminalState:

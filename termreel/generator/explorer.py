@@ -77,7 +77,7 @@ class CLIExplorer:
         """Attempt to extract version string from binary."""
         for flag in ["--version", "-v", "version"]:
             try:
-                res = subprocess.run([self.cli_name, flag], capture_output=True, text=True, timeout=3.0)
+                res = subprocess.run([self.cli_name, flag], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3.0)
                 if res.returncode == 0 and res.stdout.strip():
                     lines = res.stdout.strip().split("\n")
                     return lines[0].strip()
@@ -89,7 +89,7 @@ class CLIExplorer:
         """Extract primary help documentation."""
         for flag in ["--help", "-h", "help"]:
             try:
-                res = subprocess.run([self.cli_name, flag], capture_output=True, text=True, timeout=3.0)
+                res = subprocess.run([self.cli_name, flag], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3.0)
                 if res.returncode == 0 and res.stdout.strip():
                     return res.stdout.strip()
                 elif res.stderr.strip():
@@ -97,6 +97,7 @@ class CLIExplorer:
             except Exception:
                 pass
         return ""
+
 
     def _extract_summary(self, help_text: str) -> str:
         if not help_text:
