@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build Binary (${{ matrix.target.os }}-${{ matrix.target.arch }})
+    runs-on: ${{ matrix.target.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-latest
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+          - os: darwin
+            arch: x86_64
+            runner: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install System Dependencies (Linux)
+        if: matrix.target.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev pkg-config ffmpeg
+
+      - name: Install System Dependencies (macOS)
+        if: matrix.target.os == 'darwin'
+        run: |
+          brew install cairo pkg-config ffmpeg
+
+      - name: Install Build Tooling & TermReel
+        run: |
+          uv pip install --system -e .
+          uv pip install --system pyinstaller
+
+      - name: Build Standalone Binary with PyInstaller
+        run: |
+          pyinstaller \
+            --clean \
+            --onefile \
+            --name "termreel-${{ matrix.target.os }}-${{ matrix.target.arch }}" \
+            --collect-all termreel \
+            termreel/cli.py
+
+      - name: Test Compiled Binary
+        run: |
+          ./dist/termreel-${{ matrix.target.os }}-${{ matrix.target.arch }} --help
+          ./dist/termreel-${{ matrix.target.os }}-${{ matrix.target.arch }} info
+
+      - name: Upload Binary Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: termreel-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          path: dist/termreel-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          retention-days: 2
+
+  create-release:
+    name: Publish GitHub Release
+    needs: [build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download All Built Binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: release_artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256 Checksums
+        run: |
+          cd release_artifacts
+          sha256sum termreel-* > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release_artifacts/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

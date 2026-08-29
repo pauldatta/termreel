@@ -57,14 +57,16 @@ markdown_extensions:
 nav:
   - Overview: index.md
   - Quickstart: quickstart.md
+  - User Guides:
+      - Zero-YAML Agent Synthesis: guides/zero-yaml-agents.md
+      - Scenario Recipes & Templates: guides/recipes.md
+      - Interactive AI Agents: interactive-agents.md
   - Architecture & Specifications:
       - System Overview: architecture.md
       - "SDD: Core Engine (TR-SDD-001)": SDD_TERMREEL.md
       - "SDD: Long-Running Resilience (TR-SDD-002)": SDD_LONG_RUNNING_RESILIENCE.md
   - CLI Reference: cli.md
-
   - Scenario Manifests: scenarios.md
-  - Interactive AI Agents: interactive-agents.md
   - CLI Explorer & Generator: generator.md
   - Themes & Customization: themes.md
   - Example Scenarios:
@@ -74,3 +76,4 @@ nav:
       - Python REPL: examples/python.md
       - Matrix System HUD: examples/matrix.md
   - Contributing: contributing.md
+

@@ -4,6 +4,7 @@
 [![Docs](https://github.com/pauldatta/termreel/actions/workflows/docs.yml/badge.svg)](https://pauldatta.github.io/termreel/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![uv](https://img.shields.io/badge/managed%20by-uv-261230.svg)](https://astral.sh/uv)
 
 **TermReel** (`termreel` / `reccli`) is a standalone, headless CLI recording harness and deterministic video synthesis engine. It drives interactive CLI tools, TUIs, and autonomous AI coding agents (`agy`, `git`, `gcloud`, `gh`, `kubectl`, `vim`, etc.) inside real pseudo-terminals (PTY/tmux), injects natural human keystrokes, reacts to live screen events, and streams pixel-perfect H.264 MP4/WebM videos, animated GIFs, and Asciinema v2 (`.cast`) event streams directly into FFmpeg with **zero intermediate disk I/O**.
 
@@ -11,14 +12,16 @@
 
 ## Key Features
 
-- **True Pseudo-Terminal (PTY) & Tmux Supervision**: Executes real binaries in authentic PTY environments with complete ANSI 256-color and 24-bit TrueColor RGB support.
-- **Reactive UI & Permission Interception**: Intercepts modal trust dialogs, model thinking spinners, and human-in-the-loop permission prompts without requiring YOLO flags or print modes.
-- **Zero Intermediate Disk I/O**: Direct memory pipe streaming raw BGRA vector frames rendered by PyCairo into FFmpeg stdin.
-- **Declarative YAML Scenarios**: Multi-step interactive workflows, chapter cards, dynamic status bars, and keystroke cadence simulation.
-- **Automated CLI Exploration & Scaffolding**: `termreel probe` and `termreel generate` inspect target CLIs to auto-craft validated scenario manifests.
-- **Dual Telemetry Export**: Simultaneously outputs standard MP4 videos, animated GIFs, PNG poster thumbnails, and Asciinema v2 (`.cast`) telemetry logs.
-- **Token & Secret Redaction**: In-place regular expression masking for API keys, OAuth credentials, and private tokens.
-- **Parallel Async Test Runner**: Fast test suite execution (`termreel test -w 8`).
+| Subsystem | Capability | Architectural Benefit |
+| :--- | :--- | :--- |
+| **Terminal Emulation** | 2D cell grid, 24-bit TrueColor RGB, ANSI 256-color, alternate screen buffers (`1049h/l`). | Pixel-accurate reproduction of modern TUIs with incremental UTF-8 character stream decoding. |
+| **PTY & Session Supervision** | POSIX `openpty()` and isolated `tmux` backend drivers with SIGWINCH propagation. | Executes real interactive binaries without requiring non-interactive print modes (`-p`). |
+| **Reactive Screen Reactor** | Dynamic regex trigger engine with async keystroke dispatch. | Intercepts modal workspace trust prompts and `[y/N]` human approval dialogs automatically. |
+| **Vector Rendering** | PyCairo sub-pixel font rasterizer with monospace text run batching. | 85–90% reduction in draw calls; crisp typography across 9 calibrated color palettes. |
+| **Stream Transcoder** | Direct raw BGRA vector pipe to FFmpeg stdin with async background stderr draining. | Zero intermediate disk I/O; deadlock-free streaming with timed process reaping. |
+| **CLI Explorer & Scaffolding**| Binary probing for subcommands, usage, and security permission boundaries. | Auto-scaffolds validated scenario YAML manifests (`termreel probe` / `termreel generate`). |
+| **Session Resumption** | Multi-stage workflow checkpointing via `--resume` / `-c` and conversation ID tracking. | Seamlessly attaches to existing agent sessions without restarting the workspace. |
+| **Telemetry & Redaction** | Asciinema v2 (`.cast`) capture, PNG poster frame extraction, and automated token masking. | Lightweight audit logging with automated credential and secret masking. |
 
 ---
 
@@ -53,7 +56,6 @@ flowchart TD
     Engine --> Artifacts
 ```
 
-
 ### 1. Zero-YAML Prompting: Prompt in Plain English
 You do not need to write YAML by hand. You can instruct your AI assistant in natural language:
 
@@ -68,38 +70,61 @@ The agent reads the document using its file/search tools, references the TermRee
 
 ---
 
-## Quickstart
+## Installation
 
-### 1. Installation
+### 1. One-Line Binary Installer (Recommended for Users)
+Installs the standalone pre-compiled binary directly to `~/.local/bin/termreel` (zero Python setup required):
 
+```bash
+curl -fsSL https://raw.githubusercontent.com/pauldatta/termreel/main/install.sh | bash
+```
+
+### 2. Fast Isolated Installation with `uv` (Recommended for Developers)
+If you use [uv](https://astral.sh/uv), install TermReel into an isolated global environment in milliseconds:
+
+```bash
+uv tool install git+https://github.com/pauldatta/termreel.git
+```
+
+Or run TermReel ephemerally without installing:
+
+```bash
+uvx --from git+https://github.com/pauldatta/termreel.git termreel probe git
+```
+
+### 3. From Source
 ```bash
 git clone https://github.com/pauldatta/termreel.git
 cd termreel
-pip install -e .
+uv pip install -e .
 ```
 
-### 2. Basic Commands
+*Note: TermReel requires `ffmpeg` on your `$PATH` for video stream encoding (`brew install ffmpeg` on macOS or `sudo apt install ffmpeg` on Ubuntu/Debian).*
+
+---
+
+## Quickstart
 
 ```bash
-# Explore CLI subcommands and capabilities
+# 1. Explore CLI subcommands and security capabilities
 termreel probe git
 
-# Scaffold a tailored scenario YAML
+# 2. Scaffold a tailored scenario YAML
 termreel generate git -o scenarios/git_demo.yaml --theme tokyo-night
 
-# Record the high-fidelity video
+# 3. Record the high-fidelity video
 termreel record scenarios/git_demo.yaml -o output/git_demo.mp4
 
-# Direct one-shot recording
+# 4. Direct one-shot recording
 termreel exec "git status" -o output/status.mp4 --theme nord
 
-# Transcode Asciinema cast to MP4
+# 5. Transcode Asciinema cast to MP4
 termreel cast2video session.cast -o session.mp4 --theme dracula
 
-# Resume an ongoing session or conversation
+# 6. Resume an ongoing session or conversation
 termreel record scenarios/git_demo.yaml --resume
 
-# Run full test suite in parallel
+# 7. Run full test suite in parallel
 termreel test -w 8
 ```
 
@@ -152,14 +177,15 @@ timeline:
 
 ## Documentation
 
-Full documentation, architecture specs, and scenario guides are available at [https://pauldatta.github.io/termreel/](https://pauldatta.github.io/termreel/) or in the [`docs/`](docs/) directory:
+Comprehensive guides, architecture design documents, and scenario walkthroughs are available at **[https://pauldatta.github.io/termreel/](https://pauldatta.github.io/termreel/)**:
 
-- [Architecture & Design](docs/architecture.md)
-- [CLI Reference](docs/cli.md)
+- [System Architecture (TR-SDD-001)](docs/architecture.md)
+- [Long-Running Resilience (TR-SDD-002)](docs/SDD_LONG_RUNNING_RESILIENCE.md)
+- [CLI Reference & Commands](docs/cli.md)
 - [Scenario Manifest Specification](docs/scenarios.md)
 - [Recording Interactive AI Agents](docs/interactive-agents.md)
-- [CLI Explorer & Scaffolding](docs/generator.md)
-- [Visual Themes & Custom Chrome](docs/themes.md)
+- [CLI Explorer & Generator](docs/generator.md)
+- [Themes & Custom Window Chrome](docs/themes.md)
 - [Example Scenarios](docs/examples/antigravity.md)
 
 ---

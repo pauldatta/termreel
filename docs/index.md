@@ -1,19 +1,21 @@
-# TermReel: Universal Terminal Recording & Video Synthesis Engine
+# TermReel Documentation
 
 **TermReel** (`termreel` / `reccli`) is a standalone, headless CLI recording harness and deterministic video synthesis engine. It drives interactive command-line interfaces, terminal user interfaces (TUIs), and autonomous AI coding agents inside isolated pseudo-terminals (PTY/tmux), injects natural human-like keystrokes, reacts to live screen events, and streams pixel-perfect H.264 MP4 videos, animated GIFs, and Asciinema v2 (`.cast`) event streams directly into FFmpeg with **zero intermediate disk I/O**.
 
 ---
 
-## Key Highlights
+## Key Capabilities at a Glance
 
-- **True Pseudo-Terminal (PTY) & Tmux Supervision**: Executes real binaries in authentic PTY environments with complete ANSI 256-color and 24-bit TrueColor RGB support.
-- **Reactive UI & Modal Interception**: Intercepts workspace trust dialogs, model thinking spinners, and human-in-the-loop permission prompts without requiring YOLO flags or print modes.
-- **Zero Intermediate Disk I/O**: Direct memory pipe streaming raw BGRA vector frames rendered by PyCairo directly into FFmpeg stdin.
-- **Declarative YAML Scenarios**: Multi-step interactive workflows, chapter cards, dynamic status bars, and keystroke cadence simulation.
-- **Automated CLI Exploration & Scaffolding**: `termreel probe` and `termreel generate` inspect target CLIs to auto-craft validated scenario manifests.
-- **Dual Telemetry Export**: Simultaneously outputs standard MP4 videos, animated GIFs, PNG poster thumbnails, and Asciinema v2 (`.cast`) telemetry logs.
-- **Token & Secret Redaction**: In-place regular expression masking for API keys, OAuth credentials, and private tokens.
-- **Parallel Async Test Runner**: Fast test suite execution (`termreel test -w 8`).
+| Subsystem | Capability | Architectural Benefit |
+| :--- | :--- | :--- |
+| **Terminal Emulation** | 2D cell grid, 24-bit TrueColor RGB, ANSI 256-color, alternate screen buffers (`1049h/l`). | Pixel-accurate reproduction of modern TUIs with incremental UTF-8 stream decoding. |
+| **PTY & Session Supervision** | POSIX `openpty()` and isolated `tmux` backend drivers with SIGWINCH propagation. | Executes real interactive binaries without requiring non-interactive print modes (`-p`). |
+| **Reactive Screen Reactor** | Dynamic regex trigger engine with async keystroke dispatch. | Intercepts modal workspace trust prompts and `[y/N]` human approval dialogs automatically. |
+| **Vector Rendering** | PyCairo sub-pixel font rasterizer with monospace text run batching. | 85–90% reduction in draw calls; crisp typography across 9 calibrated color palettes. |
+| **Stream Transcoder** | Direct raw BGRA vector pipe to FFmpeg stdin with async background stderr draining. | Zero intermediate disk I/O; deadlock-free streaming with timed process reaping. |
+| **CLI Explorer & Scaffolding**| Binary probing for subcommands, usage, and security permission boundaries. | Auto-scaffolds validated scenario YAML manifests (`termreel probe` / `termreel generate`). |
+| **Session Resumption** | Multi-stage workflow checkpointing via `--resume` / `-c` and conversation ID tracking. | Seamlessly attaches to existing agent sessions without restarting the workspace. |
+| **Telemetry & Redaction** | Asciinema v2 (`.cast`) capture, PNG poster frame extraction, and automated token masking. | Lightweight audit logging with automated credential and secret masking. |
 
 ---
 
@@ -48,30 +50,34 @@ flowchart TD
     Engine --> Artifacts
 ```
 
-
-### 1. Zero-YAML Prompting: Prompt in Plain English
-You do not need to write YAML by hand. You can instruct your AI assistant in natural language:
-
-> *"Record a high-quality video showing how to initialize a Git repo, create a python script, and inspect the branch graph using TermReel in the tokyo-night theme."*
-
-### 2. Document & PR-Driven Video Generation
-Point your agent to a Google Doc, Markdown design spec, or GitHub pull request:
-
-> *"Read `@docs/feature_spec.md` and record a 720p interactive walkthrough demonstrating the new CLI flags and test verification."*
-
-The agent reads the document using its file/search tools, references the TermReel Skill, maps the workflow into structured timeline steps (`show_card`, `launch`, `type`, `wait_for_idle`, `run_shell`), executes `termreel record`, and returns the completed video artifact.
-
 ---
 
-## Quick Example
+## Explore the Documentation
 
-```bash
-# 1. Probe a CLI tool
-termreel probe git
+<div class="grid cards" markdown>
 
-# 2. Generate a tailored scenario YAML
-termreel generate git -o scenarios/git_demo.yaml --theme tokyo-night
+-   :material-rocket-launch: **[Quickstart Guide](quickstart.md)**
+    ---
+    Install TermReel via binary, uv, or source and record your first video in under 60 seconds.
 
-# 3. Record the high-fidelity video
-termreel record scenarios/git_demo.yaml -o output/git_demo.mp4
-```
+-   :material-robot: **[AI Agent Guide](guides/zero-yaml-agents.md)**
+    ---
+    Learn how to instruct AI coding agents in plain English or from design docs without writing YAML.
+
+-   :material-code-json: **[Scenario Recipes](guides/recipes.md)**
+    ---
+    Copy-pasteable scenario manifests for Git, Python REPL, Docker builds, and Antigravity agents.
+
+-   :material-console: **[CLI Reference](cli.md)**
+    ---
+    Full documentation of all CLI subcommands (`record`, `exec`, `probe`, `generate`, `cast2video`, `test`).
+
+-   :material-palette: **[Themes & Palettes](themes.md)**
+    ---
+    Preview all 9 calibrated visual themes including Catppuccin, Tokyo Night, Dracula, and Nord.
+
+-   :material-shield-check: **[Resilience Architecture](SDD_LONG_RUNNING_RESILIENCE.md)**
+    ---
+    Deep dive on watchdog heartbeat nudges, rolling lossless transcoders, and multi-step session resumption.
+
+</div>
