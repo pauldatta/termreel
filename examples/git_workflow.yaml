@@ -1,0 +1,53 @@
+version: "1.0"
+
+metadata:
+  title: "Git Pro Mastery"
+  subtitle: "Interactive Staging and Branching"
+  output: "output/git_workflow.mp4"
+  poster_output: "output/git_workflow_poster.png"
+  resolution: [1280, 720]
+  fps: 30
+  theme: "tokyo-night"
+  statusbar_left: "bash 5.2 | git 2.43 | UTF-8"
+  statusbar_right: "TermReel HD"
+
+environment:
+  create_temp_workspace: true
+  temp_workspace_prefix: "git_demo_ws_"
+  setup_commands:
+    - "git init"
+    - "git config user.name 'Paul Datta'"
+    - "git config user.email 'pkdatta2000@gmail.com'"
+    - "echo 'Initial content' > file.txt"
+
+timeline:
+  - show_card:
+      tag: "Lesson 1"
+      title: "Git Clean Commits & Diffs"
+      desc: "Demonstrating interactive Git workflows and status inspection"
+      duration: 2.0
+
+  - launch:
+      command: "bash"
+
+  - run_shell:
+      command: "git status"
+      pause: 1.5
+
+  - run_shell:
+      command: "git add file.txt"
+      pause: 1.0
+
+  - run_shell:
+      command: "git commit -m 'feat: Add initial project configuration'"
+      pause: 1.5
+
+  - run_shell:
+      command: "git log --oneline --graph --decorate"
+      pause: 2.0
+
+  - show_card:
+      tag: "Success"
+      title: "Workflow Complete"
+      desc: "Clean commit created and verified in log history"
+      duration: 2.5

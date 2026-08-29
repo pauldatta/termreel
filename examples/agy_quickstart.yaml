@@ -1,0 +1,84 @@
+version: "1.0"
+
+metadata:
+  title: "Antigravity CLI Field Workshop"
+  subtitle: "Module 1: Getting Started with agy"
+  output: "output/agy_quickstart.mp4"
+  poster_output: "output/agy_quickstart_poster.png"
+  cast_output: "output/agy_quickstart.cast"
+  resolution: [1280, 720]
+  fps: 30
+  theme: "catppuccin-mocha"
+  crf: 20
+  preset: "medium"
+  statusbar_left: "Antigravity CLI v1.1.22 | Real TTY Execution | UTF-8 | gemini-3.7-flash"
+  statusbar_right: "TermReel HD (1280x720@30fps)"
+
+environment:
+  create_temp_workspace: true
+  temp_workspace_prefix: "agy_demo_ws_"
+  setup_commands:
+    - "git init"
+    - "git config user.name 'Paul Datta'"
+    - "git config user.email 'pkdatta2000@gmail.com'"
+    - "echo '# Sample Microservice' > README.md"
+    - "echo 'def calculate_metrics(values):' > metrics.py"
+    - "echo '    return sum(values) / len(values) if values else 0' >> metrics.py"
+    - "git add . && git commit -m 'Initial commit'"
+
+redactions:
+  - "ya29\\.[a-zA-Z0-9_\\-]+"
+  - "AIza[0-9A-Za-z\\-_]{25,45}"
+
+triggers:
+  - on_match: "Do you trust the contents of this project|Yes, I trust|Trust project"
+    action: "Enter"
+    once: true
+  - on_match: "Approve change\\? \\[y/N\\]"
+    action:
+      type: "type"
+      value: "y"
+      delay: 0.2
+    once: false
+
+timeline:
+  - show_card:
+      tag: "Module 1"
+      title: "Interactive Code Review"
+      desc: "Driving Antigravity CLI to analyze local workspace codebase"
+      duration: 2.5
+
+  - launch:
+      command: "agy --add-dir . --dangerously-skip-permissions"
+      wait_for_idle: true
+      timeout: 15.0
+
+  - type:
+      text: "What files are in this project and what does metrics.py do?"
+      speed: 0.035
+      jitter: 0.015
+      send_key: "Enter"
+
+  - wait_for_idle:
+      timeout: 45.0
+      reading_pause: 2.5
+
+  - type:
+      text: "Refactor metrics.py to add variance and standard deviation calculations."
+      speed: 0.035
+      send_key: "Enter"
+
+  - wait_for_idle:
+      timeout: 45.0
+      reading_pause: 2.5
+
+  - type:
+      text: "/exit"
+      send_key: "Enter"
+      pause: 1.0
+
+  - show_card:
+      tag: "Complete"
+      title: "Module 1 Mastered"
+      desc: "Antigravity CLI successfully inspected and refactored code"
+      duration: 3.0

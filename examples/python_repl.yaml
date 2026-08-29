@@ -1,0 +1,43 @@
+version: "1.0"
+
+metadata:
+  title: "Python Interactive Exploration"
+  subtitle: "Algorithms & List Comprehensions"
+  output: "output/python_repl.mp4"
+  resolution: [1280, 720]
+  fps: 30
+  theme: "dracula"
+  statusbar_left: "Python 3.13 | Interactive REPL | UTF-8"
+  statusbar_right: "TermReel HD"
+
+timeline:
+  - show_card:
+      tag: "Demo"
+      title: "Interactive Python Session"
+      desc: "Simulating live human typing, indentation, and expression evaluation"
+      duration: 2.0
+
+  - launch:
+      command: "python3 -q"
+
+  - type:
+      text: "primes = [p for p in range(2, 30) if all(p % d != 0 for d in range(2, int(p**0.5) + 1))]"
+      speed: 0.03
+      send_key: "Enter"
+      pause: 1.0
+
+  - type:
+      text: "print('Calculated primes:', primes)"
+      speed: 0.035
+      send_key: "Enter"
+      pause: 2.0
+
+  - type:
+      text: "exit()"
+      send_key: "Enter"
+      pause: 1.0
+
+  - show_card:
+      tag: "Done"
+      title: "REPL Evaluation Succeeded"
+      duration: 2.0
