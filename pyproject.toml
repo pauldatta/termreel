@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "termreel"
+version = "0.1.0"
+description = "Universal Terminal Recording & Deterministic Video Synthesis Engine"
+readme = "README.md"
+authors = [
+    { name = "Paul Datta", email = "pkdatta2000@gmail.com" }
+]
+license = { text = "Apache-2.0" }
+requires-python = ">=3.8"
+dependencies = [
+    "pycairo>=1.20.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+termreel = "termreel.cli:main"
+reccli = "termreel.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["termreel*"]
