@@ -57,8 +57,12 @@ markdown_extensions:
 nav:
   - Overview: index.md
   - Quickstart: quickstart.md
-  - Architecture: architecture.md
+  - Architecture & Specifications:
+      - System Overview: architecture.md
+      - "SDD: Core Engine (TR-SDD-001)": SDD_TERMREEL.md
+      - "SDD: Long-Running Resilience (TR-SDD-002)": SDD_LONG_RUNNING_RESILIENCE.md
   - CLI Reference: cli.md
+
   - Scenario Manifests: scenarios.md
   - Interactive AI Agents: interactive-agents.md
   - CLI Explorer & Generator: generator.md
