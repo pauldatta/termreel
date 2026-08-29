@@ -1,0 +1,106 @@
+# ==============================================================================
+# TermReel Scenario: Antigravity (agy) Interactive TUI Recording with Hooks
+#
+# Records an authentic, interactive session of `agy` (Google Antigravity CLI).
+# Automatically provisions `.agents/hooks.json` to auto-approve tool executions
+# (such as reading and editing files) without requiring YOLO mode
+# (--dangerously-skip-permissions or -p), while streaming pixel-perfect video.
+# ==============================================================================
+
+version: "1.0"
+
+metadata:
+  title: "Antigravity Agent - Interactive TUI & Lifecycle Hooks"
+  subtitle: "Recorded via TermReel with Live Hooks Auto-Approval"
+  output: "output/agy_hooks_session.mp4"
+  cast_output: "output/agy_hooks_session.cast"
+  poster_output: "output/agy_hooks_session_poster.png"
+  resolution: [1280, 720]
+  fps: 30
+  theme: "catppuccin-mocha"
+  font: "DejaVu Sans Mono"
+  font_size: 14.5
+  crf: 19
+  preset: "slow"
+  statusbar_left: "Google Antigravity CLI"
+  statusbar_right: "TermReel Hooks Engine"
+
+environment:
+  # Create a self-contained temporary git workspace
+  create_temp_workspace: true
+  temp_workspace_prefix: "termreel_agy_hooks_"
+  auto_trust: true
+
+  # Enable Antigravity lifecycle hooks & auto-approval
+  agy_hooks: true
+  agy_auto_approve: true
+  agy_event_bridge: true
+
+  # Workspace initialization
+  setup_commands:
+    - "git init"
+    - "git config user.name 'TermReel Demo'"
+    - "git config user.email 'demo@termreel.dev'"
+    - |
+      cat << 'EOF' > app.py
+      def calculate_factorial(n: int) -> int:
+          """Computes the factorial of a non-negative integer."""
+          if n < 0:
+              raise ValueError("Factorial is not defined for negative numbers.")
+          if n in (0, 1):
+              return 1
+          result = 1
+          for i in range(2, n + 1):
+              result *= i
+          return result
+
+      if __name__ == "__main__":
+          print(f"5! = {calculate_factorial(5)}")
+      EOF
+    - "git add app.py && git commit -m 'Initial commit with factorial implementation'"
+
+timeline:
+  # 1. Opening Title Card
+  - show_card:
+      tag: "Agent Showcase"
+      title: "Interactive Antigravity (agy) with Hooks"
+      desc: "Live pseudo-terminal interaction with deterministic PreToolUse auto-approval"
+      duration: 3.0
+
+  # 2. Launch Antigravity interactive CLI
+  - launch:
+      command: "agy"
+      wait_for_idle: true
+      timeout: 25.0
+
+  # 3. Ask agy to analyze and add type hints and docstring tests
+  - type:
+      text: "Add a function calculate_fibonacci(n: int) -> int to app.py and add a test in main"
+      speed: 0.035
+      jitter: 0.015
+      send_key: "Enter"
+
+  # 4. Wait for agy to invoke tools and stream its response
+  - wait_for_idle:
+      timeout: 45.0
+      reading_pause: 3.0
+
+  # 5. Exit agy cleanly
+  - type:
+      text: "/exit"
+      speed: 0.04
+      send_key: "Enter"
+      pause: 1.5
+
+  # 6. Verify changes in terminal
+  - run_shell:
+      command: "git diff"
+      speed: 0.03
+      pause: 2.5
+
+  # 7. Closing Card
+  - show_card:
+      tag: "Completed"
+      title: "Clean Recording Finished"
+      desc: "Captured full interactive UI without permission blocks or YOLO flags"
+      duration: 2.5

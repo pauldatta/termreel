@@ -16,6 +16,7 @@ from typing import Optional, Dict
 from termreel.supervisor.base import BaseSupervisor
 from termreel.emulator.state import TerminalState
 from termreel.emulator.parser import ANSIParser
+from termreel.utils.keystrokes import KeyMap
 
 
 KEY_SEQUENCES = {
@@ -150,7 +151,7 @@ class PtySupervisor(BaseSupervisor):
 
     def send_key(self, key_name: str) -> None:
         """Send mapped key code sequence."""
-        seq = KEY_SEQUENCES.get(key_name, key_name)
+        seq = KeyMap.to_pty(key_name)
         self.send_text(seq)
 
     def send_raw(self, data: bytes) -> None:

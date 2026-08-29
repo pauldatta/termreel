@@ -19,6 +19,10 @@ DEFAULT_BUSY_PATTERNS = [
     re.compile(r"Thinking\.\.\.", re.IGNORECASE),
     re.compile(r"Executing\.\.\.", re.IGNORECASE),
     re.compile(r"Working\.\.\.", re.IGNORECASE),
+    re.compile(r"Editing\s+files\.\.\.", re.IGNORECASE),
+    re.compile(r"Applying\s+changes\.\.\.", re.IGNORECASE),
+    re.compile(r"Writing\s+files\.\.\.", re.IGNORECASE),
+    re.compile(r"esc\s+to\s+cancel", re.IGNORECASE),
     re.compile(r"[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⡿⣟⣯⣷⣾⣽⣻⢿]"),
 ]
 

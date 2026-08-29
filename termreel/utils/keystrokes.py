@@ -23,8 +23,10 @@ class KeyMap:
     ENTER = "Enter"
     RETURN = "Return"
     ESCAPE = "Escape"
+    ESC = "Escape"
     TAB = "Tab"
     BACKSPACE = "Backspace"
+    BSPACE = "Backspace"
     SPACE = "Space"
     UP = "Up"
     DOWN = "Down"
@@ -43,6 +45,124 @@ class KeyMap:
     CTRL_W = "C-w"
     CTRL_A = "C-a"
     CTRL_E = "C-e"
+    CTRL_Z = "C-z"
+
+    # Normalized lookup mappings for tmux and pty
+    _TMUX_MAP: Dict[str, str] = {
+        "enter": "Enter",
+        "return": "Enter",
+        "\r": "Enter",
+        "\n": "Enter",
+        "esc": "Escape",
+        "escape": "Escape",
+        "\x1b": "Escape",
+        "tab": "Tab",
+        "\t": "Tab",
+        "backspace": "BSpace",
+        "bspace": "BSpace",
+        "\x7f": "BSpace",
+        "space": "Space",
+        " ": "Space",
+        "up": "Up",
+        "down": "Down",
+        "left": "Left",
+        "right": "Right",
+        "home": "Home",
+        "end": "End",
+        "pageup": "PageUp",
+        "pgup": "PageUp",
+        "pagedown": "PageDown",
+        "pgdn": "PageDown",
+        "c-c": "C-c",
+        "ctrl+c": "C-c",
+        "ctrl-c": "C-c",
+        "c-d": "C-d",
+        "ctrl+d": "C-d",
+        "ctrl-d": "C-d",
+        "c-o": "C-o",
+        "ctrl+o": "C-o",
+        "ctrl-o": "C-o",
+        "c-l": "C-l",
+        "ctrl+l": "C-l",
+        "ctrl-l": "C-l",
+        "c-z": "C-z",
+        "ctrl+z": "C-z",
+        "ctrl-z": "C-z",
+        "c-j": "C-j",
+        "ctrl+j": "C-j",
+        "c-u": "C-u",
+        "ctrl+u": "C-u",
+        "c-w": "C-w",
+        "ctrl+w": "C-w",
+        "c-a": "C-a",
+        "ctrl+a": "C-a",
+        "c-e": "C-e",
+        "ctrl+e": "C-e",
+    }
+
+    _PTY_MAP: Dict[str, str] = {
+        "enter": "\r",
+        "return": "\r",
+        "\r": "\r",
+        "\n": "\r",
+        "esc": "\x1b",
+        "escape": "\x1b",
+        "\x1b": "\x1b",
+        "tab": "\t",
+        "\t": "\t",
+        "backspace": "\x7f",
+        "bspace": "\x7f",
+        "\x7f": "\x7f",
+        "space": " ",
+        " ": " ",
+        "up": "\x1b[A",
+        "down": "\x1b[B",
+        "right": "\x1b[C",
+        "left": "\x1b[D",
+        "home": "\x1b[H",
+        "end": "\x1b[F",
+        "pageup": "\x1b[5~",
+        "pgup": "\x1b[5~",
+        "pagedown": "\x1b[6~",
+        "pgdn": "\x1b[6~",
+        "c-c": "\x03",
+        "ctrl+c": "\x03",
+        "ctrl-c": "\x03",
+        "c-d": "\x04",
+        "ctrl+d": "\x04",
+        "ctrl-d": "\x04",
+        "c-o": "\x0f",
+        "ctrl+o": "\x0f",
+        "ctrl-o": "\x0f",
+        "c-l": "\x0c",
+        "ctrl+l": "\x0c",
+        "ctrl-l": "\x0c",
+        "c-z": "\x1a",
+        "ctrl+z": "\x1a",
+        "ctrl-z": "\x1a",
+        "c-j": "\n",
+        "ctrl+j": "\n",
+        "c-u": "\x15",
+        "ctrl+u": "\x15",
+        "c-w": "\x17",
+        "ctrl+w": "\x17",
+        "c-a": "\x01",
+        "ctrl+a": "\x01",
+        "c-e": "\x05",
+        "ctrl+e": "\x05",
+    }
+
+    @classmethod
+    def to_tmux(cls, key: str) -> str:
+        """Map key name or alias to tmux send-keys argument."""
+        k = key.strip().lower()
+        return cls._TMUX_MAP.get(k, key)
+
+    @classmethod
+    def to_pty(cls, key: str) -> str:
+        """Map key name or alias to ANSI escape sequence or ASCII character."""
+        k = key.strip().lower()
+        return cls._PTY_MAP.get(k, key)
 
 
 class KeystrokeGenerator:

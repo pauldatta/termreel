@@ -8,6 +8,7 @@ import time
 import uuid
 from typing import Optional, Dict
 from termreel.supervisor.base import BaseSupervisor
+from termreel.utils.keystrokes import KeyMap
 
 
 class TmuxSupervisor(BaseSupervisor):
@@ -91,8 +92,9 @@ class TmuxSupervisor(BaseSupervisor):
         """Send a special key (e.g. Enter, Escape, C-c, C-d, Up, Down)."""
         if not self._started:
             raise RuntimeError("Tmux supervisor is not running.")
+        mapped_key = KeyMap.to_tmux(key_name)
         subprocess.run(
-            ["tmux", "send-keys", "-t", self.session_name, key_name],
+            ["tmux", "send-keys", "-t", self.session_name, mapped_key],
             capture_output=True,
         )
 

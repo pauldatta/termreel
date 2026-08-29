@@ -28,6 +28,20 @@ from termreel.scenario.runner import ScenarioRunner, ScenarioReport
 from termreel.utils.keystrokes import KeystrokeGenerator, KeyMap
 from termreel.utils.redaction import Redactor
 from termreel.utils.asciicast import AsciicastRecorder, AsciicastPlayer
+from termreel.hooks.models import (
+    HookEventType,
+    HookDecision,
+    HookResult,
+    HookEvent,
+    HookHandlerConfig,
+)
+from termreel.hooks.bridge import AgyHookBridge
+from termreel.hooks.manager import HookManager
+from termreel.hooks.presets import (
+    generate_hook_script,
+    create_agy_hooks_config,
+    create_auto_approve_policy,
+)
 
 __all__ = [
     "__version__",
@@ -62,4 +76,14 @@ __all__ = [
     "Redactor",
     "AsciicastRecorder",
     "AsciicastPlayer",
+    "HookEventType",
+    "HookDecision",
+    "HookResult",
+    "HookEvent",
+    "HookHandlerConfig",
+    "AgyHookBridge",
+    "HookManager",
+    "generate_hook_script",
+    "create_agy_hooks_config",
+    "create_auto_approve_policy",
 ]

@@ -7,11 +7,12 @@
 ## Key Capabilities
 
 1. **True PTY & Tmux Supervision:** Runs real CLI binaries in pseudo-terminals with full ANSI 256-color and 24-bit TrueColor RGB support.
-2. **Event-Driven Screen Reactor:** Auto-confirms modal dialogs (like workspace trust prompts or permission approvals) and detects model idle states without brittle sleep timers.
-3. **Zero Intermediate Disk I/O:** Renders vector frames directly with PyCairo into an FFmpeg stdin pipe.
-4. **Declarative Scenario Automation:** Drives multi-step interactive workflows via YAML scenario manifests or Python scripts.
-5. **Secret Redaction:** Built-in regex masking for API keys, OAuth tokens, and private hostnames.
-6. **Dual Telemetry Export:** Synthesizes standard MP4 videos alongside Asciinema v2 (`.cast`) event logs and PNG poster thumbnails.
+2. **Antigravity Hooks Integration:** Provisions `.agents/hooks.json` to auto-approve interactive tool actions without requiring `--dangerously-skip-permissions` or `-p`, bridging lifecycle events (`PreToolUse`, `PostInvocation`) into live status badges.
+3. **Event-Driven Screen Reactor:** Auto-confirms modal dialogs (like workspace trust prompts or permission approvals) and detects model idle states without brittle sleep timers.
+4. **Zero Intermediate Disk I/O:** Renders vector frames directly with PyCairo into an FFmpeg stdin pipe.
+5. **Declarative Scenario Automation:** Drives multi-step interactive workflows via YAML scenario manifests or Python scripts.
+6. **Secret Redaction:** Built-in regex masking for API keys, OAuth tokens, and private hostnames.
+7. **Dual Telemetry Export:** Synthesizes standard MP4 videos alongside Asciinema v2 (`.cast`) event logs and PNG poster thumbnails.
 
 ---
 

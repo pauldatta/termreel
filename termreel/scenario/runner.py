@@ -10,8 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Optional, Dict, Any, List
-
+from typing import Optional, Dict, Any, List, Union
 from termreel.emulator.state import TerminalState
 from termreel.emulator.parser import ANSIParser
 from termreel.supervisor.base import BaseSupervisor
@@ -20,12 +19,15 @@ from termreel.supervisor.tmux_session import TmuxSupervisor
 from termreel.renderer.cairo_renderer import CairoTerminalRenderer
 from termreel.transcoder.ffmpeg_pipe import FFmpegPipe
 from termreel.transcoder.gif_encoder import GifEncoder
-from termreel.reactor.triggers import Trigger, TriggerAction, ActionType
+from termreel.reactor.triggers import Trigger, TriggerAction, ActionType, create_trust_dialog_trigger
 from termreel.reactor.monitor import ScreenMonitor
 from termreel.utils.keystrokes import KeystrokeGenerator, KeyMap
 from termreel.utils.redaction import Redactor
 from termreel.utils.asciicast import AsciicastRecorder
 from termreel.scenario.schema import ScenarioManifest, TimelineStep
+from termreel.hooks.bridge import AgyHookBridge
+from termreel.hooks.manager import HookManager
+from termreel.hooks.models import HookEvent, HookEventType
 
 
 @dataclass
@@ -96,6 +98,12 @@ class ScenarioRunner:
         self.asciicast: Optional[AsciicastRecorder] = None
         self.monitor = ScreenMonitor()
 
+        # Antigravity Hooks integration
+        self.hook_bridge = AgyHookBridge()
+        self.hook_manager: Optional[HookManager] = None
+        self._hook_active_tool: Optional[str] = None
+        self._setup_hook_listeners()
+
         self._active_card: Optional[Dict[str, Any]] = None
         self._status_left: Optional[str] = self.manifest.metadata.statusbar_left
         self._status_right: Optional[str] = self.manifest.metadata.statusbar_right
@@ -110,22 +118,64 @@ class ScenarioRunner:
 
         self._init_triggers()
 
+    def _setup_hook_listeners(self):
+        """Wire hook lifecycle events to dynamic UI telemetry."""
+        def _on_hook_event(ev: HookEvent):
+            norm = HookEventType.from_string(ev.event_type).value if ev.event_type else ""
+            if norm == HookEventType.PRE_TOOL_USE.value and ev.tool_name:
+                with self._lock:
+                    self._hook_active_tool = ev.tool_name
+                    if not self.manifest.metadata.statusbar_left:
+                        self._status_left = f"Tool: {ev.tool_name}"
+                    self._status_pill = f"● RUNNING {ev.tool_name.upper()}"
+            elif norm == HookEventType.POST_TOOL_USE.value:
+                with self._lock:
+                    self._hook_active_tool = None
+                    if not self.manifest.metadata.statusbar_left:
+                        self._status_left = self.manifest.metadata.statusbar_left
+                    self._status_pill = "● LIVE TTY"
+            elif norm == HookEventType.PRE_INVOCATION.value:
+                with self._lock:
+                    self._status_pill = "● GENERATING"
+            elif norm == HookEventType.POST_INVOCATION.value:
+                with self._lock:
+                    self._status_pill = "● LIVE TTY"
+
+        self.hook_bridge.add_listener(_on_hook_event)
+
     def _log(self, msg: str):
         if self.verbose:
             print(f"[termreel] {msg}")
 
+    @staticmethod
+    def _parse_trigger_action(action_val: Any) -> Union[TriggerAction, List[TriggerAction], str]:
+        if isinstance(action_val, list):
+            acts = []
+            for item in action_val:
+                if isinstance(item, dict):
+                    act_type = ActionType(item.get("type", "send_key"))
+                    val = item.get("value") or item.get("send_key") or item.get("key") or "Enter"
+                    delay = float(item.get("delay", item.get("delay_after", 0.3)))
+                    acts.append(TriggerAction(action_type=act_type, value=val, delay_after=delay))
+                elif isinstance(item, TriggerAction):
+                    acts.append(item)
+                else:
+                    acts.append(str(item))
+            return acts
+        elif isinstance(action_val, dict):
+            act_type = ActionType(action_val.get("type", "send_key"))
+            val = action_val.get("value") or action_val.get("send_key") or action_val.get("key") or "Enter"
+            delay = float(action_val.get("delay", action_val.get("delay_after", 0.3)))
+            return TriggerAction(action_type=act_type, value=val, delay_after=delay)
+        elif isinstance(action_val, TriggerAction):
+            return action_val
+        else:
+            return str(action_val)
+
     def _init_triggers(self):
         """Convert manifest trigger configs into active Trigger instances."""
         for tc in self.manifest.triggers:
-            # Parse action
-            action_val = tc.action
-            if isinstance(action_val, dict):
-                act_type = ActionType(action_val.get("type", "send_key"))
-                val = action_val.get("value") or action_val.get("send_key") or action_val.get("key") or "Enter"
-                act = TriggerAction(action_type=act_type, value=val, delay_after=float(action_val.get("delay", 0.3)))
-            else:
-                act = str(action_val)
-
+            act = self._parse_trigger_action(tc.action)
             self.monitor.add_trigger(
                 Trigger(
                     pattern=tc.on_match,
@@ -135,6 +185,12 @@ class ScenarioRunner:
                     max_firings=tc.max_firings,
                 )
             )
+
+        # Auto-register workspace trust dialog trigger if enabled and not already configured
+        if self.manifest.environment.auto_trust:
+            has_trust_trigger = any("trust" in str(getattr(t, "pattern", "")).lower() for t in self.monitor.triggers)
+            if not has_trust_trigger:
+                self.monitor.add_trigger(create_trust_dialog_trigger())
 
     def _setup_environment(self):
         """Set up working directory, temporary workspace, and run setup commands."""
@@ -154,8 +210,30 @@ class ScenarioRunner:
             self._log(f"Running setup command: {cmd}")
             subprocess.run(cmd, shell=True, cwd=self._work_dir, check=True)
 
+        # Setup Antigravity lifecycle hooks if enabled
+        if self.manifest.environment.agy_hooks:
+            custom_cfg = (
+                self.manifest.environment.hooks
+                if isinstance(self.manifest.environment.hooks, dict)
+                else None
+            )
+            self.hook_manager = HookManager(
+                workspace_dir=self._work_dir,
+                bridge=self.hook_bridge,
+                auto_approve=self.manifest.environment.agy_auto_approve,
+                log_events=self.manifest.environment.agy_event_bridge,
+                custom_policy=self.manifest.environment.agy_custom_policy,
+                custom_hooks_config=custom_cfg,
+            )
+            prov = self.hook_manager.provision()
+            self._log(f"Provisioned Antigravity hooks at: {prov['hooks_json']}")
+
     def _cleanup_environment(self):
         """Run cleanup commands and delete temporary workspace if applicable."""
+        if self.hook_manager:
+            self.hook_manager.cleanup()
+            self._log(f"Cleaned up Antigravity hooks in: {self._work_dir}")
+
         for cmd in self.manifest.environment.cleanup_commands:
             try:
                 subprocess.run(cmd, shell=True, cwd=self._work_dir, check=False)
@@ -385,6 +463,46 @@ class ScenarioRunner:
             if pause_after > 0:
                 time.sleep(pause_after)
 
+        elif st in ("send_keys", "keys"):
+            keys_list = params.get("keys", params.get("value", []))
+            if isinstance(keys_list, str):
+                keys_list = [k.strip() for k in keys_list.split(",") if k.strip()]
+            delay_between = float(params.get("delay", params.get("delay_between", 0.2)))
+            pause_after = float(params.get("pause", 0.3))
+            if not self.supervisor:
+                raise RuntimeError("Cannot send keys: No CLI session launched.")
+            for k in keys_list:
+                self.supervisor.send_key(k)
+                time.sleep(delay_between)
+            if pause_after > 0:
+                time.sleep(pause_after)
+
+        elif st == "select_choice":
+            direction = params.get("direction", "Down")
+            steps = int(params.get("steps", params.get("times", 1)))
+            confirm = bool(params.get("confirm", True))
+            confirm_key = params.get("confirm_key", "Enter")
+            pause_after = float(params.get("pause", 0.5))
+            if not self.supervisor:
+                raise RuntimeError("Cannot select choice: No CLI session launched.")
+            for _ in range(steps):
+                self.supervisor.send_key(direction)
+                time.sleep(0.2)
+            if confirm:
+                time.sleep(0.2)
+                self.supervisor.send_key(confirm_key)
+            if pause_after > 0:
+                time.sleep(pause_after)
+
+        elif st == "shortcut":
+            key_name = params.get("key") or params.get("value", "C-o")
+            pause_after = float(params.get("pause", 0.5))
+            if not self.supervisor:
+                raise RuntimeError("Cannot send shortcut: No CLI session launched.")
+            self.supervisor.send_key(key_name)
+            if pause_after > 0:
+                time.sleep(pause_after)
+
         elif st == "paste":
             text = params.get("text") or params.get("value", "")
             pause_after = float(params.get("pause", 0.5))
@@ -446,6 +564,27 @@ class ScenarioRunner:
                     self.monitor.assert_text_absent(pattern, supervisor=self.supervisor, timeout=timeout)
                 else:
                     self.monitor.assert_text_present(pattern, supervisor=self.supervisor, timeout=timeout)
+
+        elif st in ("wait_for_hook_event", "wait_hook"):
+            ev_type = params.get("event") or params.get("event_type") or params.get("value", "")
+            tool = params.get("tool") or params.get("tool_name")
+            timeout = float(params.get("timeout", 30.0))
+            pause_after = float(params.get("pause", params.get("reading_pause", 0.5)))
+            ev = self.hook_bridge.wait_for_event(event_type=ev_type, tool_name=tool, timeout=timeout)
+            if not ev:
+                self._log(f"⚠️ Warning: Hook event '{ev_type}' (tool={tool}) did not arrive within {timeout}s.")
+            if pause_after > 0:
+                time.sleep(pause_after)
+
+        elif st in ("assert_hook_event", "assert_hook"):
+            ev_type = params.get("event") or params.get("event_type") or params.get("value", "")
+            tool = params.get("tool") or params.get("tool_name")
+            timeout = float(params.get("timeout", 5.0))
+            negate = bool(params.get("negate", False))
+            if negate:
+                self.hook_bridge.assert_event_absent(event_type=ev_type, tool_name=tool, timeout=timeout)
+            else:
+                self.hook_bridge.assert_event_present(event_type=ev_type, tool_name=tool, timeout=timeout)
 
         elif st == "set_statusbar":
             with self._lock:

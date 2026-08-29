@@ -239,3 +239,45 @@ When recording interactive sessions with `agy`:
 1. **Workspace Trust Prompts:** `agy` prompts `Do you trust the contents of this project?` on initial launch in new folders. TermReel triggers auto-detect this prompt and inject `Enter`.
 2. **Permissions:** Use `--dangerously-skip-permissions` or register auto-approval triggers (`Approve change? [y/N]` -> `y` + `Enter`).
 3. **Model Latency Handling:** Always use `wait_for_idle` instead of hardcoded sleeps. TermReel monitors the PTY buffer for busy spinners (`⡿ Generating...`, `⠋ Thinking...`) and proceeds only when the `? for shortcuts` idle prompt returns.
+
+---
+
+## 7. Controlling & Observing `agy` with Lifecycle Hooks
+
+Antigravity CLI supports declarative lifecycle hooks defined in `<workspace>/.agents/hooks.json` (see [Antigravity Hooks Specification](https://antigravity.google/docs/hooks.md)). TermReel seamlessly integrates with this mechanism to provide **deterministic control and observability without YOLO flags**:
+
+### Why Use Hooks in TermReel?
+- **Zero-Friction Tool Auto-Approval:** By handling `PreToolUse` hooks, TermReel automatically approves agent actions (such as reading, writing, and executing code) in full interactive TUI mode—without requiring `--dangerously-skip-permissions` or `-p` (headless mode).
+- **Dynamic Video Chrome Badging:** TermReel listens to `PreToolUse` and `PostToolUse` events to update the video statusbar with real-time badges (e.g. `● RUNNING READ_FILE`, `● GENERATING`).
+- **Deterministic Synchronization:** Instead of relying purely on screen OCR or polling, scenario timelines can use `wait_for_hook_event` and `assert_hook_event` for instant synchronization.
+
+### Scenario Environment Options
+```yaml
+environment:
+  agy_hooks: true          # Automatically deploy .agents/hooks.json and hook script
+  agy_auto_approve: true   # Auto-approve PreToolUse tool invocations
+  agy_event_bridge: true   # Stream lifecycle events into TermReel event bus
+  agy_custom_policy:       # Optional granular allow/deny tool overrides
+    dangerous_tool: deny
+    write_file: allow
+```
+
+### Hook Timeline Steps
+```yaml
+timeline:
+  - launch:
+      command: "agy"
+      wait_for_idle: true
+
+  # Wait deterministically for the model to finish its turn
+  - wait_for_hook_event:
+      event: "PostInvocation"
+      timeout: 30.0
+      pause: 1.0
+
+  # Assert that the agent called the expected tool
+  - assert_hook_event:
+      event: "PreToolUse"
+      tool: "write_file"
+```
+

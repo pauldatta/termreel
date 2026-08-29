@@ -111,6 +111,100 @@ class TestAgyIntegration(unittest.TestCase):
         self.assertIn("width=1280", res.stdout)
         self.assertIn("height=720", res.stdout)
 
+    def test_record_agy_pure_interactive_mode(self):
+        """Record real agy in fully interactive mode (no -p, no --dangerously-skip-permissions)."""
+        interactive_mp4 = os.path.join(self.temp_dir, "agy_interactive.mp4")
+        interactive_cast = os.path.join(self.temp_dir, "agy_interactive.cast")
+
+        # Create a sample python file in the workspace
+        with open(os.path.join(self.temp_dir, "calculator.py"), "w") as f:
+            f.write("def multiply(x, y):\n    return x * y\n")
+        subprocess.run(["git", "add", "."], cwd=self.temp_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add calculator"], cwd=self.temp_dir, check=True, capture_output=True)
+
+        manifest_dict = {
+            "version": "1.0",
+            "metadata": {
+                "title": "Antigravity Interactive TUI",
+                "subtitle": "Live Session Capture",
+                "output": interactive_mp4,
+                "cast_output": interactive_cast,
+                "resolution": [1280, 720],
+                "fps": 30,
+                "theme": "catppuccin-mocha",
+                "statusbar_left": "agy 1.1.22 | Full Interactive Mode | UTF-8",
+                "statusbar_right": "TermReel HD",
+            },
+            "environment": {
+                "cwd": self.temp_dir,
+                "auto_trust": True,
+            },
+            "timeline": [
+                {
+                    "show_card": {
+                        "tag": "Module 1",
+                        "title": "Pure Interactive TUI",
+                        "desc": "Testing interactive agy session with automated workspace trust",
+                        "duration": 1.5,
+                    }
+                },
+                {
+                    "launch": {
+                        "command": "agy",
+                        "wait_for_idle": True,
+                        "timeout": 20.0,
+                    }
+                },
+                {
+                    "type": {
+                        "text": "What does calculator.py do?",
+                        "speed": 0.03,
+                        "send_key": "Enter",
+                    }
+                },
+                {
+                    "wait_for_idle": {
+                        "timeout": 35.0,
+                        "reading_pause": 2.0,
+                    }
+                },
+                {
+                    "type": {
+                        "text": "/exit",
+                        "speed": 0.03,
+                        "send_key": "Enter",
+                        "pause": 1.0,
+                    }
+                },
+                {
+                    "show_card": {
+                        "tag": "Complete",
+                        "title": "Interactive Session Verification Passed",
+                        "duration": 1.0,
+                    }
+                },
+            ],
+        }
+
+        manifest = ScenarioManifest.from_dict(manifest_dict)
+        runner = ScenarioRunner(manifest=manifest, verbose=True)
+        report = runner.run()
+
+        self.assertEqual(report.status, "pass")
+        self.assertTrue(os.path.exists(interactive_mp4))
+        self.assertGreater(os.path.getsize(interactive_mp4), 10000)
+        self.assertTrue(os.path.exists(interactive_cast))
+
+        # Inspect generated video with ffprobe
+        res = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=width,height,codec_name", "-of", "default=noprint_wrappers=1", interactive_mp4],
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("codec_name=h264", res.stdout)
+        self.assertIn("width=1280", res.stdout)
+        self.assertIn("height=720", res.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

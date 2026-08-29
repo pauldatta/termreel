@@ -24,6 +24,11 @@ environment:
     - "echo '    return {\"p50_ms\": p50, \"p99_ms\": p99, \"sla_met\": p99 < 150.0}' >> service.py"
     - "git add . && git commit -m 'Initial service repository'"
 
+triggers:
+  - on_match: "Do you trust the contents of this project|Yes, I trust|Trust project"
+    action: "Enter"
+    once: true
+
 timeline:
   - show_card:
       tag: "Module 1"
@@ -32,31 +37,34 @@ timeline:
       duration: 2.0
 
   - launch:
-      command: "bash"
+      command: "agy"
+      wait_for_idle: true
+      timeout: 15.0
 
   - type:
-      text: "agy --version"
+      text: "What does service.py do?"
+      speed: 0.035
+      jitter: 0.015
+      send_key: "Enter"
+
+  - wait_for_idle:
+      timeout: 45.0
+      reading_pause: 2.5
+
+  - type:
+      text: "/exit"
       speed: 0.03
       send_key: "Enter"
       pause: 1.0
-
-  - type:
-      text: "cat service.py"
-      speed: 0.03
-      send_key: "Enter"
-      pause: 1.5
-
-  - type:
-      text: "agy -p 'Summarize the SLA metric calculation logic in service.py' --dangerously-skip-permissions"
-      speed: 0.025
-      send_key: "Enter"
-      pause: 3.5
 
   - show_card:
       tag: "Module 2"
       title: "Git Staging & Verification"
       desc: "Inspecting repository status and commit history"
       duration: 2.0
+
+  - launch:
+      command: "bash"
 
   - type:
       text: "git status -s"

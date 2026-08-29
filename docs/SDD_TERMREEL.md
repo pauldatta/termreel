@@ -492,3 +492,51 @@ To record dozens of CLI workshops, modules, and exercises concurrently without t
 | **Interactive Turn Fidelity** | 100% authentic capture of tool calls and TUI | Visual inspection against real CLI |
 | **Zero Intermediate Disk I/O** | 0 temporary frame image files written | Memory pipe to FFmpeg stdin |
 | **Pre-Commit Contract** | Clean MkDocs build, no broken links | `make test` & `python3 validate-md.py` |
+
+---
+
+## 9. Antigravity Hooks Subsystem & Lifecycle Interception
+
+In addition to pure PTY screen scraping and keystroke injection, TermReel integrates natively with the **Antigravity Hooks API** (see `https://antigravity.google/docs/hooks.md`). This enables deep lifecycle control and real-time observability without sacrificing the authentic interactive TUI experience:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│               Antigravity Hooks Interception Architecture              │
+└────────────────────────────────────────────────────────────────────────┘
+
+ [ Antigravity CLI (agy) ]
+            │
+            │ Lifecycle Events (stdin JSON)
+            ▼
+ ┌───────────────────────────────────────────────────────────────────────┐
+ │ .agents/hooks/termreel_hook.py                                        │
+ │   • PreToolUse: Auto-approves tool actions without YOLO flags         │
+ │   • PostToolUse: Captures tool execution outputs                      │
+ │   • PreInvocation / PostInvocation: Tracks model turn boundaries      │
+ └──────────────────────────────────┬────────────────────────────────────┘
+                                    │
+               Writes JSONL events  │  Returns verdict JSON (stdout)
+                                    ▼
+                         ┌────────────────────┐
+                         │ .events.jsonl pipe │
+                         └─────────┬──────────┘
+                                   │
+              Tails events in real │ time
+                                   ▼
+                         ┌────────────────────┐
+                         │   AgyHookBridge    │
+                         └─────────┬──────────┘
+                                   │
+    ┌──────────────────────────────┴──────────────────────────────┐
+    ▼                                                             ▼
+┌──────────────────────────────┐              ┌──────────────────────────────┐
+│ Dynamic UI Telemetry         │              │ Deterministic Sync           │
+│ (● RUNNING READ_FILE badges) │              │ (wait_for_hook_event steps)  │
+└──────────────────────────────┘              └──────────────────────────────┘
+```
+
+### Key Architectural Properties
+1. **Zero-Flag Interactivity:** Traditional headless runs require `--dangerously-skip-permissions` or `-p` which hides the interactive TUI. TermReel's `PreToolUse` auto-approval hook allows `agy` to run in authentic interactive mode without permission blocks or manual dialog confirmations.
+2. **Deterministic Lifecycle Synchronization:** Scenario steps can synchronize via `wait_for_hook_event` (e.g. `PostInvocation`, `PostToolUse`) rather than heuristic timeouts.
+3. **Workspace Isolation & Safe Cleanup:** `HookManager` provisions `.agents/hooks.json` during environment setup, backs up existing configurations, and cleans up completely on session termination.
+

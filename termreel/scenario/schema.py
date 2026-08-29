@@ -32,8 +32,14 @@ class ScenarioEnvironment:
     env: Dict[str, str] = field(default_factory=dict)
     create_temp_workspace: bool = False
     temp_workspace_prefix: str = "termreel_ws_"
+    auto_trust: bool = True
     setup_commands: List[str] = field(default_factory=list)
     cleanup_commands: List[str] = field(default_factory=list)
+    hooks: Optional[Union[List[Any], Dict[str, Any]]] = None
+    agy_hooks: bool = True
+    agy_auto_approve: bool = True
+    agy_event_bridge: bool = True
+    agy_custom_policy: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -92,8 +98,14 @@ class ScenarioManifest:
             env=env_dict.get("env", {}),
             create_temp_workspace=bool(env_dict.get("create_temp_workspace", False)),
             temp_workspace_prefix=env_dict.get("temp_workspace_prefix", "termreel_ws_"),
+            auto_trust=bool(env_dict.get("auto_trust", True)),
             setup_commands=env_dict.get("setup_commands", []),
             cleanup_commands=env_dict.get("cleanup_commands", []),
+            hooks=env_dict.get("hooks"),
+            agy_hooks=bool(env_dict.get("agy_hooks", True)),
+            agy_auto_approve=bool(env_dict.get("agy_auto_approve", True)),
+            agy_event_bridge=bool(env_dict.get("agy_event_bridge", True)),
+            agy_custom_policy=env_dict.get("agy_custom_policy", {}),
         )
 
         redactions = data.get("redactions", [])
@@ -114,13 +126,18 @@ class ScenarioManifest:
 
         timeline_data = data.get("timeline", [])
         timeline = []
+        recognized_actions = (
+            "show_card", "card", "launch", "type", "send_key", "key", "send_keys", "keys",
+            "select_choice", "shortcut", "paste",
+            "wait_for_idle", "wait_for_text", "wait_for_hook_event", "wait_hook", "wait", "pause", "sleep",
+            "run_shell", "exec", "assert", "assert_hook_event", "assert_hook",
+            "set_statusbar", "screenshot", "poster",
+        )
         for item in timeline_data:
             if isinstance(item, dict):
                 # Standard syntax: {action_name: params} or {type: '...', params...}
                 for k, v in item.items():
-                    if k in ("show_card", "card", "launch", "type", "send_key", "key", "paste",
-                             "wait_for_idle", "wait_for_text", "wait", "pause", "sleep",
-                             "run_shell", "exec", "assert", "set_statusbar", "screenshot", "poster"):
+                    if k in recognized_actions:
                         params = v if isinstance(v, dict) else {"value": v}
                         timeline.append(TimelineStep(step_type=k, params=params))
                         break

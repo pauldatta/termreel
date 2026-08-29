@@ -49,7 +49,7 @@ timeline:
       duration: 2.5
 
   - launch:
-      command: "agy --add-dir . --dangerously-skip-permissions"
+      command: "agy"
       wait_for_idle: true
       timeout: 15.0
 

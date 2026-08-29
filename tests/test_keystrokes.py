@@ -19,6 +19,23 @@ class TestKeystrokes(unittest.TestCase):
         actions = [e[0] for e in events]
         self.assertIn("key", actions)
         self.assertEqual(events[-1], ("char", "a", kg.get_delay("a")))
+    def test_key_mapping_and_normalization(self):
+        # Test tmux key mapping
+        self.assertEqual(KeyMap.to_tmux("enter"), "Enter")
+        self.assertEqual(KeyMap.to_tmux("Return"), "Enter")
+        self.assertEqual(KeyMap.to_tmux("ctrl+c"), "C-c")
+        self.assertEqual(KeyMap.to_tmux("Ctrl+O"), "C-o")
+        self.assertEqual(KeyMap.to_tmux("up"), "Up")
+        self.assertEqual(KeyMap.to_tmux("DOWN"), "Down")
+        self.assertEqual(KeyMap.to_tmux("escape"), "Escape")
+
+        # Test pty key mapping
+        self.assertEqual(KeyMap.to_pty("enter"), "\r")
+        self.assertEqual(KeyMap.to_pty("ctrl+c"), "\x03")
+        self.assertEqual(KeyMap.to_pty("ctrl+o"), "\x0f")
+        self.assertEqual(KeyMap.to_pty("up"), "\x1b[A")
+        self.assertEqual(KeyMap.to_pty("down"), "\x1b[B")
+        self.assertEqual(KeyMap.to_pty("esc"), "\x1b")
 
 
 if __name__ == "__main__":
