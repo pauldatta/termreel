@@ -22,6 +22,47 @@
 
 ---
 
+## 🤖 Using TermReel with AI Agents (`agy`, Claude Code, Gemini CLI)
+
+TermReel includes an **Agent Skill** (`skills/termreel/SKILL.md` / `.agents/skills/termreel/SKILL.md`) that allows AI coding assistants to automatically script, record, and verify terminal videos directly from your high-level instructions.
+
+```
+┌──────────────────────────────────────┐
+│  User Plain Text Prompt / Doc Link   │
+│  "Record a demo of refactoring auth" │
+└──────────────────┬───────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────┐
+│  AI Agent with TermReel Skill        │
+│  • Probes target CLI (`probe`)       │
+│  • Reads requirements from docs      │
+│  • Crafts scenario YAML manifest     │
+└──────────────────┬───────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────┐
+│  TermReel Headless Recording Harness │
+│  • Spawns PTY / Tmux session         │
+│  • Handles permissions & trust dialog│
+│  • Outputs pixel-perfect MP4 + .cast │
+└──────────────────────────────────────┘
+```
+
+### 1. Zero-YAML Prompting: Prompt in Plain English
+You do not need to write YAML by hand. You can instruct your AI assistant in natural language:
+
+> *"Record a high-quality video showing how to initialize a Git repo, create a python script, and inspect the branch graph using TermReel in the tokyo-night theme."*
+
+### 2. Document & PR-Driven Video Generation
+Point your agent to a Google Doc, Markdown design spec, or GitHub pull request:
+
+> *"Read `@docs/feature_spec.md` and record a 720p interactive walkthrough demonstrating the new CLI flags and test verification."*
+
+The agent reads the document using its file/search tools, references the TermReel Skill, maps the workflow into structured timeline steps (`show_card`, `launch`, `type`, `wait_for_idle`, `run_shell`), executes `termreel record`, and returns the completed video artifact.
+
+---
+
 ## Quickstart
 
 ### 1. Installation
@@ -49,6 +90,9 @@ termreel exec "git status" -o output/status.mp4 --theme nord
 
 # Transcode Asciinema cast to MP4
 termreel cast2video session.cast -o session.mp4 --theme dracula
+
+# Resume an ongoing session or conversation
+termreel record scenarios/git_demo.yaml --resume
 
 # Run full test suite in parallel
 termreel test -w 8
