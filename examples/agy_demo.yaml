@@ -1,0 +1,77 @@
+version: "1.0"
+
+metadata:
+  title: "Antigravity CLI Field Workshop"
+  subtitle: "Module 1: Codebase Inspection"
+  output: "output/agy_demo.mp4"
+  poster_output: "output/agy_demo_poster.png"
+  cast_output: "output/agy_demo.cast"
+  resolution: [1280, 720]
+  fps: 30
+  theme: "catppuccin-mocha"
+  statusbar_left: "Antigravity CLI v1.1.22 | Real TTY Execution | UTF-8 | gemini-3.7-flash"
+  statusbar_right: "TermReel HD (1280x720@30fps)"
+
+environment:
+  create_temp_workspace: true
+  temp_workspace_prefix: "agy_field_ws_"
+  setup_commands:
+    - "git init"
+    - "git config user.name 'Paul Datta'"
+    - "git config user.email 'pkdatta2000@gmail.com'"
+    - "echo '# Cloud Architecture Service' > README.md"
+    - "echo 'def calculate_latency(p50, p99):' > service.py"
+    - "echo '    return {\"p50_ms\": p50, \"p99_ms\": p99, \"sla_met\": p99 < 150.0}' >> service.py"
+    - "git add . && git commit -m 'Initial service repository'"
+
+timeline:
+  - show_card:
+      tag: "Module 1"
+      title: "Interactive Codebase Inspection"
+      desc: "Demonstrating Antigravity CLI execution inside pseudo-terminal"
+      duration: 2.0
+
+  - launch:
+      command: "bash"
+
+  - type:
+      text: "agy --version"
+      speed: 0.03
+      send_key: "Enter"
+      pause: 1.0
+
+  - type:
+      text: "cat service.py"
+      speed: 0.03
+      send_key: "Enter"
+      pause: 1.5
+
+  - type:
+      text: "agy -p 'Summarize the SLA metric calculation logic in service.py' --dangerously-skip-permissions"
+      speed: 0.025
+      send_key: "Enter"
+      pause: 3.5
+
+  - show_card:
+      tag: "Module 2"
+      title: "Git Staging & Verification"
+      desc: "Inspecting repository status and commit history"
+      duration: 2.0
+
+  - type:
+      text: "git status -s"
+      speed: 0.03
+      send_key: "Enter"
+      pause: 1.0
+
+  - type:
+      text: "git log --oneline -n 3"
+      speed: 0.03
+      send_key: "Enter"
+      pause: 2.0
+
+  - show_card:
+      tag: "Complete"
+      title: "Field Workshop Finished"
+      desc: "Pixel-perfect H.264 MP4 synthesized with zero disk I/O"
+      duration: 2.5
