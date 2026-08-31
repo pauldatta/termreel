@@ -496,6 +496,7 @@ class TestTriggerMaxCount(unittest.TestCase):
     def test_trigger_config_manifest_parsing_with_max_count(self):
         yaml_str = """
 version: "1.0"
+timeline: []
 triggers:
   - on_match: 'Do you want to continue\\?'
     action: "y"

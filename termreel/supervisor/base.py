@@ -61,6 +61,29 @@ class BaseSupervisor(ABC):
         """Gracefully terminate the CLI process and clean up PTY resources."""
         pass
 
+    def send_input(self, text: str, delay_per_char: float = 0.0) -> None:
+        """Type characters into terminal session (alias for send_text)."""
+        self.send_text(text, delay_per_char=delay_per_char)
+
+    def get_screen(self) -> str:
+        """Capture rendered plain screen text (alias for capture_plain)."""
+        return self.capture_plain()
+
+    def wait_for_output(self, pattern: object, timeout: float = 5.0, interval: float = 0.05) -> bool:
+        """Wait until pattern appears in rendered screen text or timeout expires."""
+        import time
+        start = time.time()
+        while time.time() - start < timeout:
+            screen = self.get_screen()
+            if isinstance(pattern, str):
+                if pattern in screen:
+                    return True
+            elif hasattr(pattern, "search"):
+                if pattern.search(screen):
+                    return True
+            time.sleep(interval)
+        return False
+
     def __enter__(self) -> "BaseSupervisor":
         self.start()
         return self

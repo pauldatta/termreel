@@ -12,7 +12,7 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Optional, Dict
+from typing import Optional, Dict, Union, Any, Pattern
 from termreel.supervisor.base import BaseSupervisor
 from termreel.emulator.state import TerminalState
 from termreel.emulator.parser import ANSIParser
@@ -169,6 +169,10 @@ class PtySupervisor(BaseSupervisor):
         else:
             os.write(self.master_fd, text.encode("utf-8"))
 
+    def send_input(self, text: str, delay_per_char: float = 0.0) -> None:
+        """Inject input characters (alias for send_text)."""
+        self.send_text(text, delay_per_char=delay_per_char)
+
     def send_key(self, key_name: str) -> None:
         """Send mapped key code sequence."""
         seq = KeyMap.to_pty(key_name)
@@ -191,6 +195,24 @@ class PtySupervisor(BaseSupervisor):
         """Capture rendered plain screen text."""
         with self._lock:
             return self.state.get_rendered_text()
+
+    def get_screen(self) -> str:
+        """Extract live plain screen text."""
+        return self.capture_plain()
+
+    def wait_for_output(self, pattern: Union[str, Any], timeout: float = 5.0, interval: float = 0.05) -> bool:
+        """Wait until pattern appears in terminal screen or timeout expires."""
+        start = time.time()
+        while time.time() - start < timeout:
+            with self._lock:
+                if isinstance(pattern, str):
+                    if self.state.contains(pattern):
+                        return True
+                elif hasattr(pattern, "search"):
+                    if self.state.search_regex(pattern):
+                        return True
+            time.sleep(interval)
+        return False
 
     def resize(self, rows: int, cols: int) -> None:
         """Resize terminal and notify child process via SIGWINCH."""

@@ -28,6 +28,7 @@ class FFmpegPipe:
         crf: int = 20,
         preset: str = "medium",
         codec: Optional[str] = None,
+        pix_fmt: str = "bgra",
     ):
         self.output_file = output_file
         self.width = width
@@ -36,6 +37,7 @@ class FFmpegPipe:
         self.crf = crf
         self.preset = preset
         self.codec = codec
+        self.pix_fmt = pix_fmt
 
         self.process: Optional[subprocess.Popen] = None
         self.is_open: bool = False
@@ -69,7 +71,7 @@ class FFmpegPipe:
             "-f", "rawvideo",
             "-vcodec", "rawvideo",
             "-s", f"{self.width}x{self.height}",
-            "-pix_fmt", "bgra",
+            "-pix_fmt", self.pix_fmt,
             "-r", str(self.fps),
             "-i", "-",
         ]
@@ -143,11 +145,11 @@ class FFmpegPipe:
             try:
                 self.process.stdin.write(frame_bytes)
                 self.frame_count += 1
-            except (BrokenPipeError, OSError) as e:
+            except (BrokenPipeError, OSError, ValueError) as e:
                 stderr_summary = "\n".join(list(self._stderr_buffer)[-10:])
                 raise TranscoderError(f"FFmpeg stdin pipe broken after {self.frame_count} frames.\nStderr:\n{stderr_summary}") from e
 
-    def close(self):
+    def close(self, timeout: float = 10.0):
         """Close stdin and wait for FFmpeg to finalize encoding with timed process reaping."""
         with self._write_lock:
             if not self.is_open:
@@ -160,18 +162,21 @@ class FFmpegPipe:
                     try:
                         self.process.stdin.flush()
                         self.process.stdin.close()
-                    except (BrokenPipeError, OSError):
+                    except (BrokenPipeError, OSError, ValueError):
                         pass
 
                 try:
-                    self.process.wait(timeout=10.0)
+                    self.process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     self.process.terminate()
                     try:
                         self.process.wait(timeout=3.0)
                     except subprocess.TimeoutExpired:
                         self.process.kill()
-                        self.process.wait(timeout=2.0)
+                        try:
+                            self.process.wait(timeout=2.0)
+                        except Exception:
+                            pass
                     raise FFmpegDeadlockError("FFmpeg failed to finalize container within timeout; process killed.")
 
                 if self._stderr_thread and self._stderr_thread.is_alive():

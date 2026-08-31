@@ -95,9 +95,11 @@ def run_parallel_tests(
     print(f"Ran {total_tests} tests in {total_time:.2f}s ({max_workers} workers)")
     if failures or errors:
         print(f"❌ FAILED (failures={len(failures)}, errors={len(errors)}, passed={passed})")
+        sys.stdout.flush()
         return 1
     else:
         print(f"✅ OK ({passed} passed, 0 failures, 0 errors)")
+        sys.stdout.flush()
         return 0
 
 
