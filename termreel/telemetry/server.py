@@ -91,8 +91,13 @@ class TelemetryServer:
 
         self._server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._server_socket.bind(self.socket_path)
+        try:
+            os.chmod(self.socket_path, 0o600)
+        except OSError:
+            pass
         self._server_socket.listen(16)
         self._server_socket.settimeout(0.5)
+
 
         self._server_thread = threading.Thread(
             target=self._listen_loop,

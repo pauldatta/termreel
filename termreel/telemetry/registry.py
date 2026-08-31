@@ -25,11 +25,11 @@ class SessionRegistry:
         else:
             default_dir = os.path.expanduser("~/.termreel/sessions")
             try:
-                os.makedirs(default_dir, exist_ok=True)
+                os.makedirs(default_dir, mode=0o700, exist_ok=True)
                 self.directory = default_dir
             except OSError:
                 fallback_dir = "/tmp/termreel_sessions"
-                os.makedirs(fallback_dir, exist_ok=True)
+                os.makedirs(fallback_dir, mode=0o700, exist_ok=True)
                 self.directory = fallback_dir
 
     def _session_file(self, session_id: str) -> str:
@@ -44,7 +44,12 @@ class SessionRegistry:
         tmp_path = f"{filepath}.tmp.{os.getpid()}.{threading.get_ident()}"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
         os.replace(tmp_path, filepath)
+
 
     def register(self, metadata: SessionMetadata) -> str:
         """
