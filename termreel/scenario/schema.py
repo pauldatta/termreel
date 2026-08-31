@@ -6,6 +6,7 @@ Engineered with Pydantic v2 structured validation and dual dataclass compatibili
 from typing import Dict, List, Optional, Tuple, Any, Union
 import os
 import yaml
+from termreel.exceptions import ScenarioValidationError
 
 try:
     from pydantic import BaseModel, Field, ConfigDict
@@ -63,8 +64,51 @@ if PYDANTIC_AVAILABLE:
         once: bool = True
         cooldown: float = 1.0
         max_firings: int = 1
+        max_count: Optional[int] = None
         delay_before: float = 0.0
         delay_after: float = 0.3
+
+        def model_post_init(self, __context: Any) -> None:
+            if self.max_count is not None:
+                self.max_firings = self.max_count
+            else:
+                self.max_count = self.max_firings
+            if self.max_firings > 1 and self.once:
+                self.once = False
+
+    class SendKeyParams(SchemaBase):
+        key: str
+        delay_before: float = 0.0
+        delay_after: float = 0.0
+        pause_after: float = 0.0
+        delay: float = 0.0
+        pause: float = 0.3
+
+    class LaunchParams(SchemaBase):
+        command: str = "bash"
+        env: Dict[str, str] = Field(default_factory=dict)
+        wait_for_idle: bool = False
+        timeout: float = 15.0
+        wait_for_prompt: bool = False
+        prompt_pattern: str = r"([$#>]\s*$|%\s*$)"
+        prompt_timeout: float = 10.0
+
+    class WaitForIdleParams(SchemaBase):
+        timeout: float = 60.0
+        reading_pause: float = 1.5
+        idle_regex: Optional[str] = None
+        busy_regex: Optional[str] = None
+        wait_for_prompt: bool = False
+        prompt_pattern: str = r"([$#>]\s*$|%\s*$)"
+
+    class InspectModalParams(SchemaBase):
+        open_command: Optional[str] = None
+        open_key: Optional[str] = None
+        wait_for_render: Optional[str] = None
+        display_duration: float = 2.0
+        dismiss_key: str = "Escape"
+        pause_after: float = 0.5
+        timeout: float = 10.0
 
     class TimelineStep(SchemaBase):
         step_type: str
@@ -125,8 +169,55 @@ else:
         once: bool = True
         cooldown: float = 1.0
         max_firings: int = 1
+        max_count: Optional[int] = None
         delay_before: float = 0.0
         delay_after: float = 0.3
+
+        def __post_init__(self):
+            if self.max_count is not None:
+                self.max_firings = self.max_count
+            else:
+                self.max_count = self.max_firings
+            if self.max_firings > 1 and self.once:
+                self.once = False
+
+    @dataclass
+    class SendKeyParams:
+        key: str
+        delay_before: float = 0.0
+        delay_after: float = 0.0
+        pause_after: float = 0.0
+        delay: float = 0.0
+        pause: float = 0.3
+
+    @dataclass
+    class LaunchParams:
+        command: str = "bash"
+        env: Dict[str, str] = field(default_factory=dict)
+        wait_for_idle: bool = False
+        timeout: float = 15.0
+        wait_for_prompt: bool = False
+        prompt_pattern: str = r"([$#>]\s*$|%\s*$)"
+        prompt_timeout: float = 10.0
+
+    @dataclass
+    class WaitForIdleParams:
+        timeout: float = 60.0
+        reading_pause: float = 1.5
+        idle_regex: Optional[str] = None
+        busy_regex: Optional[str] = None
+        wait_for_prompt: bool = False
+        prompt_pattern: str = r"([$#>]\s*$|%\s*$)"
+
+    @dataclass
+    class InspectModalParams:
+        open_command: Optional[str] = None
+        open_key: Optional[str] = None
+        wait_for_render: Optional[str] = None
+        display_duration: float = 2.0
+        dismiss_key: str = "Escape"
+        pause_after: float = 0.5
+        timeout: float = 10.0
 
     @dataclass
     class TimelineStep:
@@ -208,13 +299,24 @@ def parse_manifest_dict(data: Dict[str, Any]) -> ScenarioManifest:
         if isinstance(t, dict):
             pat = t.get("on_match") or t.get("pattern") or t.get("match")
             if pat:
+                raw_count = t.get("max_count")
+                if raw_count is None:
+                    raw_count = t.get("max_firings")
+                count_val = int(raw_count) if raw_count is not None else 1
+                once_val = t.get("once")
+                if once_val is not None:
+                    once = bool(once_val)
+                else:
+                    once = (count_val == 1)
+
                 triggers.append(
                     TriggerConfig(
                         on_match=pat,
                         action=t.get("action", "Enter"),
-                        once=bool(t.get("once", True)),
+                        once=once,
                         cooldown=float(t.get("cooldown", 1.0)),
-                        max_firings=int(t.get("max_firings", 1)),
+                        max_firings=count_val,
+                        max_count=count_val,
                         delay_before=float(t.get("delay_before", 0.0)),
                         delay_after=float(t.get("delay_after", t.get("delay", 0.3))),
                     )
@@ -225,7 +327,20 @@ def parse_manifest_dict(data: Dict[str, Any]) -> ScenarioManifest:
     for item in timeline_data:
         if isinstance(item, dict):
             for step_key, step_val in item.items():
-                if isinstance(step_val, dict):
+                if step_key in ("send_key", "key"):
+                    if isinstance(step_val, dict):
+                        if "key" not in step_val or not step_val["key"]:
+                            raise ScenarioValidationError(
+                                f"Invalid '{step_key}' step: structured dictionary must contain a non-empty 'key' field, got: {step_val}"
+                            )
+                        params = dict(step_val)
+                    elif isinstance(step_val, str):
+                        params = {"value": step_val, "key": step_val}
+                    else:
+                        raise ScenarioValidationError(
+                            f"Invalid '{step_key}' step: expected string or dictionary, got {type(step_val).__name__}: {step_val}"
+                        )
+                elif isinstance(step_val, dict):
                     params = step_val
                 elif isinstance(step_val, list):
                     params = {"commands": step_val}

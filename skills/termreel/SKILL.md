@@ -235,10 +235,75 @@ timeline:
 
 ---
 
-## 5. Parallel Test Execution
+## 5. Parallel Batch Rendering & Multimodal Auditing
+
+### Batch Rendering (`termreel batch`)
+Render dozens of scenarios concurrently with automatic poster extraction and structured reporting:
+```bash
+# Render all scenario files using 4 concurrent workers
+termreel batch scenarios/*.yaml \
+  --concurrency 4 \
+  --output-dir output/videos/ \
+  --generate-posters \
+  --poster-time 0.5 \
+  --report BATCH_REPORT.json
+```
+
+### Multimodal Video Verification (`termreel audit`)
+Verify recorded videos against specifications using `gemini-3.1-pro-preview` with an automated 100-point rubric:
+```bash
+# Audit video output against the scenario specification
+termreel audit output/service_demo.mp4 \
+  --spec scenarios/service_demo.yaml \
+  --model gemini-3.1-pro-preview \
+  --threshold 80 \
+  --report AUDIT_REPORT.md
+```
+TermReel grades:
+1. **Visual Stability**: Resolution, framerate, and container health.
+2. **TUI Formatting**: Color contrast, dark mode window chrome, aspect ratio.
+3. **Execution Completion**: Progression of commands and resting prompt state.
+4. **Error-Free Output**: Absence of uncaught stack traces or abrupt exits.
+
+---
+
+## 6. Field Ergonomics & Timeline Primitives
+
+1. **Structured `send_key`**:
+   Use dictionaries when you need precise pauses around control keys:
+   ```yaml
+   - send_key:
+       key: "Escape"
+       delay_before: 0.5
+       pause_after: 1.0
+   ```
+2. **TUI Modal Inspection (`inspect_modal`)**:
+   Cleanly demo popup dialogs (`/context`, `/stats`, `/diff`, `/agents`):
+   ```yaml
+   - inspect_modal:
+       open_command: "/context"
+       wait_for_render: "Token Usage"
+       display_duration: 3.0
+       dismiss_key: "Escape"
+       pause_after: 1.0
+   ```
+3. **Shell Prompt Synchronization (`wait_for_prompt`)**:
+   Prevent keystroke collisions with shell initialization prompts:
+   ```yaml
+   - launch:
+       command: "bash"
+       wait_for_prompt: true
+   ```
+4. **Soft Newline Collapsing**:
+   TermReel automatically collapses YAML multiline string wraps into single spaces so accidental line breaks don't submit premature commands. Use `multiline: true` only when literal line breaks are intentional.
+
+---
+
+## 7. Parallel Test Execution
 
 Run the complete test suite concurrently:
 ```bash
 # Run all tests across 8 async worker threads
 termreel test -w 8
 ```
+

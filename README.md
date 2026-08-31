@@ -21,7 +21,10 @@
 | **Stream Transcoder** | Direct raw BGRA vector pipe to FFmpeg stdin with async background stderr draining. | Zero intermediate disk I/O; deadlock-free streaming with timed process reaping. |
 | **CLI Explorer & Scaffolding**| Binary probing for subcommands, usage, and security permission boundaries. | Auto-scaffolds validated scenario YAML manifests (`termreel probe` / `termreel generate`). |
 | **Session Resumption** | Multi-stage workflow checkpointing via `--resume` / `-c` and conversation ID tracking. | Seamlessly attaches to existing agent sessions without restarting the workspace. |
+| **Batch Orchestrator** | Concurrently render multi-scenario test suites (`termreel batch`) with automatic poster frame sync. | Eliminates custom shell scripts; generates consolidated JSON and Markdown batch reports. |
+| **Multimodal Video Audit** | Automated video evaluation via `gemini-3.1-pro-preview` with 100-point rubric (`termreel audit`). | Visual regression testing against scenario specs with automated CI pass/fail thresholding. |
 | **Telemetry & Redaction** | Asciinema v2 (`.cast`) capture, PNG poster frame extraction, and automated token masking. | Lightweight audit logging with automated credential and secret masking. |
+
 
 ---
 

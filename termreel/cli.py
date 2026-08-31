@@ -98,6 +98,28 @@ def build_parser() -> argparse.ArgumentParser:
     test_parser.add_argument("-w", "--workers", type=int, default=8, help="Number of concurrent worker threads (default: 8)")
     test_parser.add_argument("-d", "--dir", default="tests", help="Directory containing test cases (default: tests)")
 
+    # 10. batch
+    batch_parser = subparsers.add_parser("batch", help="Run scenario recordings concurrently in parallel batches")
+    batch_parser.add_argument("scenarios", nargs="+", help="Scenario YAML manifest files or glob patterns (e.g. scenarios/*.yaml)")
+    batch_parser.add_argument("-c", "--concurrency", type=int, default=4, help="Number of parallel worker threads (default: 4)")
+    batch_parser.add_argument("-o", "--output-dir", help="Destination directory for rendered MP4 videos")
+    batch_parser.add_argument("--generate-posters", dest="generate_posters", action="store_true", default=True, help="Automatically extract poster frame for each (default: True)")
+    batch_parser.add_argument("--no-posters", dest="generate_posters", action="store_false", help="Disable automatic poster extraction")
+    batch_parser.add_argument("--poster-time", type=float, default=0.5, help="Timestamp in seconds for poster frame extraction (default: 0.5)")
+    batch_parser.add_argument("--report", help="Destination path for JSON or Markdown batch summary report")
+    batch_parser.add_argument("--theme", help="Override visual theme for all scenarios")
+    batch_parser.add_argument("--fps", type=int, help="Override FPS for all scenarios")
+    batch_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress terminal progress overview")
+
+    # 11. audit
+    audit_parser = subparsers.add_parser("audit", help="Audit video recording quality using multimodal AI or local heuristics")
+    audit_parser.add_argument("video", help="Path to video file to audit (e.g. output/demo.mp4)")
+    audit_parser.add_argument("--spec", help="Path to scenario YAML manifest or specification file")
+    audit_parser.add_argument("--model", default="gemini-3.1-pro-preview", help="Gemini multimodal model name (default: gemini-3.1-pro-preview)")
+    audit_parser.add_argument("--threshold", type=int, default=80, help="Pass/fail scorecard score threshold 0-100 (default: 80)")
+    audit_parser.add_argument("--report", help="Destination path to save Markdown or JSON audit report")
+    audit_parser.add_argument("--json", action="store_true", help="Output scorecard in JSON format")
+
     return parser
 
 
@@ -356,6 +378,48 @@ def cmd_test(args: argparse.Namespace) -> int:
     return run_parallel_tests(start_dir=args.dir, max_workers=args.workers)
 
 
+def cmd_batch(args: argparse.Namespace) -> int:
+    from termreel.batch import BatchOrchestrator
+    orchestrator = BatchOrchestrator(
+        scenarios=args.scenarios,
+        concurrency=args.concurrency,
+        output_dir=args.output_dir,
+        generate_posters=args.generate_posters,
+        poster_time=args.poster_time,
+        report_file=args.report,
+        theme_override=args.theme,
+        fps_override=args.fps,
+        quiet=args.quiet,
+    )
+    report = orchestrator.run()
+    return 0 if report.failed == 0 else 1
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    if not os.path.exists(args.video):
+        print(f"Error: Video file not found: {args.video}", file=sys.stderr)
+        return 1
+
+    from termreel.audit import VideoAuditor
+    auditor = VideoAuditor(
+        video_path=args.video,
+        spec_path=args.spec,
+        model_name=args.model,
+        threshold=args.threshold,
+    )
+    report = auditor.audit()
+
+    if args.report:
+        auditor.save_report(args.report)
+
+    if args.json:
+        print(report.to_json())
+    else:
+        print(report.to_markdown())
+
+    return 0 if report.passed else 1
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -382,6 +446,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_info()
     elif args.subcommand == "test":
         return cmd_test(args)
+    elif args.subcommand == "batch":
+        return cmd_batch(args)
+    elif args.subcommand == "audit":
+        return cmd_audit(args)
 
     return 0
 

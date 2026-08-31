@@ -5,12 +5,14 @@ keystroke injection, reactive triggers, and continuous video synthesis.
 
 from dataclasses import dataclass
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
 from typing import Optional, Dict, Any, List, Union
+from termreel.exceptions import ScenarioValidationError
 from termreel.emulator.state import TerminalState
 from termreel.emulator.parser import ANSIParser
 from termreel.supervisor.base import BaseSupervisor
@@ -208,13 +210,15 @@ class ScenarioRunner:
         """Convert manifest trigger configs into active Trigger instances."""
         for tc in self.manifest.triggers:
             act = self._parse_trigger_action(tc.action, delay_before=tc.delay_before, delay_after=tc.delay_after)
+            max_c = tc.max_count if getattr(tc, "max_count", None) is not None else tc.max_firings
             self.monitor.add_trigger(
                 Trigger(
                     pattern=tc.on_match,
                     action=act,
                     once=tc.once,
                     cooldown_seconds=tc.cooldown,
-                    max_firings=tc.max_firings,
+                    max_firings=max_c,
+                    max_count=max_c,
                 )
             )
 
@@ -445,6 +449,114 @@ class ScenarioRunner:
             workspace_dir=self._work_dir,
         )
 
+    def _execute_type(self, params: Dict[str, Any]):
+        """Execute a type step with typing cadence, optional newline collapse, and key emission."""
+        text = str(params.get("text") if params.get("text") is not None else params.get("value", ""))
+        speed = float(params.get("speed", 0.035))
+        jitter = float(params.get("jitter", 0.015))
+        typos = float(params.get("typos", 0.0))
+        send_key_after = params.get("send_key")
+        pause_after = float(params.get("pause", params.get("reading_pause", 0.5)))
+        collapse_newlines = bool(params.get("collapse_newlines", True))
+        multiline = bool(params.get("multiline", False))
+
+        if not self.supervisor:
+            raise RuntimeError("Cannot type: No CLI session launched yet.")
+
+        if collapse_newlines and not multiline:
+            text = re.sub(r'[ \t]*[\r\n][ \t\r\n]*', ' ', text.strip('\r\n'))
+
+        kg = KeystrokeGenerator(base_speed=speed, jitter=jitter, typo_rate=typos)
+        for action_type, val, delay in kg.generate_keystroke_events(text):
+            if action_type == "char":
+                self.supervisor.send_text(val)
+            elif action_type == "key":
+                self.supervisor.send_key(val)
+            elif action_type == "pause":
+                pass
+            time.sleep(delay)
+
+        if send_key_after:
+            time.sleep(0.1)
+            self.supervisor.send_key(send_key_after)
+
+        if pause_after > 0:
+            time.sleep(pause_after)
+
+    def _execute_send_key(self, params: Dict[str, Any], step_type: str = "send_key"):
+        """Execute send_key action with polymorphic string/dict support and timing delays."""
+        if not self.supervisor:
+            raise RuntimeError("Cannot send key: No CLI session launched.")
+
+        key_name = params.get("key") or params.get("value")
+        if not key_name or not isinstance(key_name, str):
+            raise ScenarioValidationError(
+                f"Invalid '{step_type}' step: 'key' is required and must be a non-empty string, got {params}"
+            )
+
+        delay_before = float(params.get("delay_before", 0.0))
+
+        # Extract delay_after (or pause_after or delay)
+        delay_after = None
+        for k in ("delay_after", "pause_after", "delay", "pause"):
+            if params.get(k) is not None:
+                delay_after = float(params[k])
+                break
+        if delay_after is None:
+            if "delay_before" in params:
+                delay_after = 0.0
+            elif "value" in params and not any(k in params for k in ("delay_after", "pause_after", "delay")):
+                delay_after = 0.3
+            else:
+                delay_after = 0.0
+
+        if delay_before > 0:
+            time.sleep(delay_before)
+
+        self.supervisor.send_key(key_name)
+
+        if delay_after > 0:
+            time.sleep(delay_after)
+
+    def _execute_inspect_modal(self, params: Dict[str, Any]):
+        """Execute inspect_modal: open modal via command or shortcut, wait for render, display, and dismiss."""
+        if not self.supervisor:
+            raise RuntimeError("Cannot inspect modal: No CLI session launched.")
+
+        open_command = params.get("open_command")
+        open_key = params.get("open_key")
+        wait_for_render = params.get("wait_for_render")
+        display_duration = float(params.get("display_duration", params.get("duration", 2.0)))
+        dismiss_key = params.get("dismiss_key", "Escape")
+        pause_after = float(params.get("pause_after", params.get("pause", 0.5)))
+        timeout = float(params.get("timeout", 10.0))
+
+        if open_command:
+            speed = float(params.get("speed", 0.03))
+            kg = KeystrokeGenerator(base_speed=speed, jitter=0.01)
+            for _, ch, delay in kg.generate_keystroke_events(open_command):
+                self.supervisor.send_text(ch)
+                time.sleep(delay)
+            time.sleep(0.1)
+            self.supervisor.send_key("Enter")
+        elif open_key:
+            self.supervisor.send_key(open_key)
+
+        if wait_for_render:
+            regex = re.compile(wait_for_render, re.IGNORECASE | re.MULTILINE)
+            if not self.monitor.wait_for_text(regex, supervisor=self.supervisor, timeout=timeout):
+                raise TimeoutError(
+                    f"Modal render pattern '{wait_for_render}' not found within {timeout}s."
+                )
+
+        if display_duration > 0:
+            time.sleep(display_duration)
+
+        self.supervisor.send_key(dismiss_key)
+
+        if pause_after > 0:
+            time.sleep(pause_after)
+
     def _execute_step(self, step: TimelineStep, index: int):
         """Execute a single timeline step."""
         st = step.step_type
@@ -463,7 +575,7 @@ class ScenarioRunner:
                 self._active_card = None
 
         elif st == "launch":
-            cmd = params.get("command", "bash")
+            cmd = params.get("command") or params.get("value", "bash")
             env_vars = self.manifest.environment.env.copy()
             if "env" in params:
                 env_vars.update(params["env"])
@@ -499,42 +611,21 @@ class ScenarioRunner:
                 timeout = float(params.get("timeout", 15.0))
                 self.monitor.wait_for_idle(self.supervisor, timeout=timeout)
 
+            wait_for_prompt = bool(params.get("wait_for_prompt", False))
+            if wait_for_prompt:
+                prompt_pattern = params.get("prompt_pattern", r"([$#>]\s*$|%\s*$)")
+                prompt_timeout = float(params.get("prompt_timeout", 10.0))
+                regex = re.compile(prompt_pattern, re.MULTILINE)
+                if not self.monitor.wait_for_text(regex, supervisor=self.supervisor, timeout=prompt_timeout):
+                    raise TimeoutError(
+                        f"Timed out waiting for prompt pattern '{prompt_pattern}' within {prompt_timeout}s."
+                    )
+
         elif st == "type":
-            text = params.get("text") or params.get("value", "")
-            speed = float(params.get("speed", 0.035))
-            jitter = float(params.get("jitter", 0.015))
-            typos = float(params.get("typos", 0.0))
-            send_key_after = params.get("send_key")
-            pause_after = float(params.get("pause", params.get("reading_pause", 0.5)))
-
-            if not self.supervisor:
-                raise RuntimeError("Cannot type: No CLI session launched yet.")
-
-            kg = KeystrokeGenerator(base_speed=speed, jitter=jitter, typo_rate=typos)
-            for action_type, val, delay in kg.generate_keystroke_events(text):
-                if action_type == "char":
-                    self.supervisor.send_text(val)
-                elif action_type == "key":
-                    self.supervisor.send_key(val)
-                elif action_type == "pause":
-                    pass
-                time.sleep(delay)
-
-            if send_key_after:
-                time.sleep(0.1)
-                self.supervisor.send_key(send_key_after)
-
-            if pause_after > 0:
-                time.sleep(pause_after)
+            self._execute_type(params)
 
         elif st in ("send_key", "key"):
-            key_name = params.get("key") or params.get("value", "Enter")
-            pause_after = float(params.get("pause", 0.3))
-            if not self.supervisor:
-                raise RuntimeError("Cannot send key: No CLI session launched.")
-            self.supervisor.send_key(key_name)
-            if pause_after > 0:
-                time.sleep(pause_after)
+            self._execute_send_key(params, step_type=st)
 
         elif st in ("send_keys", "keys"):
             keys_list = params.get("keys", params.get("value", []))
@@ -594,6 +685,9 @@ class ScenarioRunner:
             reading_pause = float(params.get("reading_pause", 1.5))
             idle_regex = params.get("idle_regex")
             busy_regex = params.get("busy_regex")
+            wait_for_prompt = bool(params.get("wait_for_prompt", False))
+            prompt_pattern = params.get("prompt_pattern", r"([$#>]\s*$|%\s*$)")
+            prompt_timeout = float(params.get("prompt_timeout", timeout))
             if self.supervisor:
                 self.monitor.wait_for_idle(
                     supervisor=self.supervisor,
@@ -601,6 +695,12 @@ class ScenarioRunner:
                     idle_regex=idle_regex,
                     busy_regex=busy_regex,
                 )
+                if wait_for_prompt:
+                    regex = re.compile(prompt_pattern, re.MULTILINE)
+                    if not self.monitor.wait_for_text(regex, supervisor=self.supervisor, timeout=prompt_timeout):
+                        raise TimeoutError(
+                            f"Prompt pattern '{prompt_pattern}' not found on screen after idle within {prompt_timeout}s."
+                        )
             if reading_pause > 0:
                 time.sleep(reading_pause)
 
@@ -676,3 +776,6 @@ class ScenarioRunner:
                     self._status_right = params["right"]
                 if "pill" in params:
                     self._status_pill = params["pill"]
+
+        elif st == "inspect_modal":
+            self._execute_inspect_modal(params)

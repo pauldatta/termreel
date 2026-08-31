@@ -44,6 +44,8 @@ from termreel.hooks.presets import (
 )
 from termreel.generator.explorer import CLIExplorer, CLISpec, SubcommandInfo
 from termreel.generator.scaffold import ScenarioGenerator
+from termreel.batch import BatchOrchestrator, BatchReport, BatchScenarioResult
+from termreel.audit import VideoAuditor, AuditReport, CriterionScore
 
 __all__ = [
     "__version__",
@@ -92,4 +94,10 @@ __all__ = [
     "CLISpec",
     "SubcommandInfo",
     "ScenarioGenerator",
+    "BatchOrchestrator",
+    "BatchReport",
+    "BatchScenarioResult",
+    "VideoAuditor",
+    "AuditReport",
+    "CriterionScore",
 ]

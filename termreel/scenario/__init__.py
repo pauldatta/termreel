@@ -8,6 +8,10 @@ from termreel.scenario.schema import (
     ScenarioEnvironment,
     TriggerConfig,
     TimelineStep,
+    SendKeyParams,
+    LaunchParams,
+    WaitForIdleParams,
+    InspectModalParams,
 )
 from termreel.scenario.runner import (
     ScenarioRunner,
@@ -20,6 +24,10 @@ __all__ = [
     "ScenarioEnvironment",
     "TriggerConfig",
     "TimelineStep",
+    "SendKeyParams",
+    "LaunchParams",
+    "WaitForIdleParams",
+    "InspectModalParams",
     "ScenarioRunner",
     "ScenarioReport",
 ]

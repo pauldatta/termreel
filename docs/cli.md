@@ -14,6 +14,8 @@ TermReel provides a unified command-line tool `termreel` (aliased as `reccli`).
 | `termreel validate` | Validate scenario YAML syntax & schema | `termreel validate scenario.yaml` |
 | `termreel probe` | Explore CLI binary metadata and subcommands | `termreel probe agy` |
 | `termreel generate` | Scaffold tailored YAML scenario for a CLI | `termreel generate git -o git.yaml` |
+| `termreel batch` | Concurrently render batches of scenarios | `termreel batch scenarios/*.yaml -c 4` |
+| `termreel audit` | Multimodal video verification with Gemini | `termreel audit demo.mp4 --spec spec.yaml` |
 | `termreel themes` | List all 9 visual themes and palettes | `termreel themes` |
 | `termreel test` | Run test suite concurrently across async workers | `termreel test -w 8` |
 | `termreel info` | Display environment and dependency status | `termreel info` |
@@ -38,6 +40,30 @@ termreel record <scenario.yaml> [options]
 - `--preserve-workspace`: Keep temporary workspace directory intact after recording.
 - `-q, --quiet`: Suppress verbose logging.
 
+### `termreel batch`
+```bash
+termreel batch <scenarios...> [options]
+```
+Executes multiple scenario recordings concurrently using a worker pool.
+- `-c, --concurrency <int>`: Number of concurrent workers (default: 4).
+- `-o, --output-dir <path>`: Destination directory for all output videos.
+- `--generate-posters` / `--no-posters`: Automatically extract PNG poster frame for each recording.
+- `--poster-time <float>`: Timestamp in seconds for poster frame capture (default: 0.5).
+- `--report <path>`: Path to output structured batch report (JSON or Markdown).
+- `--theme <name>`: Override theme across all scenarios.
+- `--fps <int>`: Override framerate across all scenarios.
+- `-q, --quiet`: Suppress verbose logging.
+
+### `termreel audit`
+```bash
+termreel audit <video.mp4> [options]
+```
+Performs automated multimodal video verification and scoring against a specification.
+- `--spec <path>`: Path to original scenario YAML manifest, PRD, or test document.
+- `--model <name>`: Multimodal AI model to use (default: `gemini-3.1-pro-preview`).
+- `--threshold <int>`: Minimum passing score out of 100 (default: 80).
+- `--report <path>`: Path to save the audit report scorecard (Markdown or JSON).
+- `--json`: Output raw JSON scorecard to stdout.
 
 ### `termreel exec`
 ```bash
@@ -71,3 +97,4 @@ termreel generate <binary> [options]
 termreel test [-w <workers>] [-d <test_dir>]
 ```
 Runs unit and integration tests in parallel (e.g. `termreel test -w 8`).
+

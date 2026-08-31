@@ -38,6 +38,7 @@ class Trigger:
     once: bool = True
     cooldown_seconds: float = 1.0
     max_firings: int = 1
+    max_count: Optional[int] = None
     times_fired: int = 0
     last_fired_time: float = 0.0
 
@@ -47,6 +48,17 @@ class Trigger:
         else:
             self._compiled_regex = self.pattern
 
+        # Harmonize max_count and max_firings
+        if self.max_count is not None:
+            self.max_firings = self.max_count
+        else:
+            self.max_count = self.max_firings
+
+        # If a limit > 1 was specified, ensure once is False so it doesn't stop at 1
+        effective_limit = self.max_count if self.max_count is not None else self.max_firings
+        if effective_limit > 1 and self.once:
+            self.once = False
+
     def matches(self, screen_text: str) -> bool:
         """Check if trigger pattern matches current screen text."""
         return bool(self._compiled_regex.search(screen_text))
@@ -54,9 +66,10 @@ class Trigger:
     def can_fire(self, current_time: Optional[float] = None) -> bool:
         """Check if trigger is eligible to fire based on count and cooldown."""
         now = current_time if current_time is not None else time.time()
+        effective_limit = self.max_count if self.max_count is not None else self.max_firings
         if self.once and self.times_fired >= 1:
             return False
-        if self.max_firings > 0 and self.times_fired >= self.max_firings:
+        if effective_limit > 0 and self.times_fired >= effective_limit:
             return False
         if (now - self.last_fired_time) < self.cooldown_seconds:
             return False
