@@ -122,6 +122,16 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--report", help="Destination path to save Markdown or JSON audit report")
     audit_parser.add_argument("--json", action="store_true", help="Output scorecard in JSON format")
 
+    # 12. peek
+    peek_parser = subparsers.add_parser("peek", help="Observe running TermReel sessions in real-time")
+    peek_parser.add_argument("session", nargs="?", default=None, help="Target session ID, prefix, or PID (default: latest active)")
+    peek_parser.add_argument("-f", "--follow", "--watch", dest="follow", action="store_true", help="Follow live terminal updates in real-time")
+    peek_parser.add_argument("--list", action="store_true", help="List all active and recent sessions")
+    peek_parser.add_argument("--image", help="Capture high-res PNG vector screenshot of current frame")
+    peek_parser.add_argument("--web", nargs="?", const=8989, type=int, default=None, help="Launch web dashboard (default: 8989)")
+    peek_parser.add_argument("--raw", action="store_true", help="Output raw plain screen text without HUD banner")
+    peek_parser.add_argument("--interval", type=float, default=0.1, help="Refresh interval for follow mode in seconds (default: 0.1)")
+
     return parser
 
 
@@ -426,6 +436,51 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0 if report.passed else 1
 
 
+def cmd_peek(args: argparse.Namespace) -> int:
+    from termreel.peek import PeekClient
+
+    client = PeekClient()
+
+    if getattr(args, "list", False):
+        print(client.list_sessions())
+        return 0
+
+    session = client.find_target_session(getattr(args, "session", None))
+    if session is None:
+        target = getattr(args, "session", None)
+        if target:
+            print(f"❌ Error: No TermReel session found matching '{target}'.", file=sys.stderr)
+        else:
+            print("❌ Error: No active TermReel sessions found. Run 'termreel peek --list' to view recent sessions.", file=sys.stderr)
+        return 1
+
+    if getattr(args, "image", None):
+        out_path = args.image
+        success = client.capture_image(session, out_path)
+        if success:
+            print(f"📸 Frame capture saved to: {out_path}")
+            return 0
+        else:
+            print(f"❌ Failed to capture frame image to: {out_path}", file=sys.stderr)
+            return 1
+
+    if getattr(args, "web", None) is not None:
+        port = args.web
+        client.serve_web(session, port=port)
+        return 0
+
+    if getattr(args, "follow", False):
+        interval = getattr(args, "interval", 0.1)
+        client.follow(session, interval=interval)
+        return 0
+
+    # Default: snapshot
+    raw = getattr(args, "raw", False)
+    snapshot = client.render_snapshot(session, raw=raw)
+    print(snapshot)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -456,6 +511,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_batch(args)
     elif args.subcommand == "audit":
         return cmd_audit(args)
+    elif args.subcommand == "peek":
+        return cmd_peek(args)
 
     return 0
 

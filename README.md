@@ -23,7 +23,9 @@
 | **Session Resumption** | Multi-stage workflow checkpointing via `--resume` / `-c` and conversation ID tracking. | Seamlessly attaches to existing agent sessions without restarting the workspace. |
 | **Batch Orchestrator** | Concurrently render multi-scenario test suites (`termreel batch`) with automatic poster frame sync. | Eliminates custom shell scripts; generates consolidated JSON and Markdown batch reports. |
 | **Multimodal Video Audit** | Automated video evaluation via `gemini-3.1-pro-preview` with 100-point rubric (`termreel audit`). | Visual regression testing against scenario specs with automated CI pass/fail thresholding. |
+| **Live Peek & Telemetry** | Non-invasive terminal observation (`termreel peek`), live 10 FPS follow mode (`-f`), vector PNG snapshots, and local web dashboard. | Zero-recording-overhead IPC allows developers and agents to monitor running renders in real time. |
 | **Telemetry & Redaction** | Asciinema v2 (`.cast`) capture, PNG poster frame extraction, and automated token masking. | Lightweight audit logging with automated credential and secret masking. |
+
 
 
 ---

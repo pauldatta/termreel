@@ -278,7 +278,36 @@ TermReel grades:
 
 ---
 
-## 6. Field Ergonomics & Timeline Primitives
+---
+
+## 6. Real-Time Observation & Peek (`termreel peek`)
+
+When TermReel runs background renders or long-running agent workflows, use `termreel peek` to non-invasively inspect the live terminal without stopping or slowing down the recording:
+
+```bash
+# 1. Take an instantaneous snapshot of the latest active recording session
+termreel peek
+
+# 2. Follow the live terminal screen at 10 FPS (press 'q' or 'Ctrl+C' to exit)
+termreel peek -f
+
+# 3. List all active and recent recording sessions
+termreel peek --list
+
+# 4. Capture a high-resolution PNG screenshot of the current live vector frame
+termreel peek --image /tmp/live_screen.png
+
+# 5. Launch a local web dashboard for browser observation
+termreel peek --web 8989
+# Access via http://pauldatta.c.googlers.com:8989 or http://localhost:8989
+
+# 6. Output raw plain text without HUD borders (for pipes or automated agent checks)
+termreel peek --raw
+```
+
+---
+
+## 7. Field Ergonomics & Timeline Primitives
 
 1. **Structured `send_key`**:
    Use dictionaries when you need precise pauses around control keys:
@@ -310,11 +339,12 @@ TermReel grades:
 
 ---
 
-## 7. Parallel Test Execution
+## 8. Parallel Test Execution
 
 Run the complete test suite concurrently:
 ```bash
 # Run all tests across 8 async worker threads
 termreel test -w 8
 ```
+
 

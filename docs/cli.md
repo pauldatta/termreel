@@ -101,3 +101,16 @@ termreel test [-w <workers>] [-d <test_dir>]
 ```
 Runs unit and integration tests in parallel (e.g. `termreel test -w 8`).
 
+### `termreel peek`
+```bash
+termreel peek [session_id] [options]
+```
+Non-invasively inspects a running render or background recording task in real time.
+- `session_id`: Optional session ID, prefix, or PID. Defaults to the latest active recording session.
+- `-f, --follow, --watch`: Follow live terminal updates in real-time (10 FPS TUI stream).
+- `--list`: List all currently active and recent recording sessions.
+- `--image <path>`: Capture an instant high-resolution PNG vector screenshot of the live terminal frame.
+- `--web [port]`: Launch a local web dashboard (default: `http://localhost:8989` or `http://pauldatta.c.googlers.com:8989`) with auto-refreshing live terminal view.
+- `--raw`: Output raw plain screen text without HUD borders (ideal for piping or automated checks).
+- `--interval <float>`: Screen polling/refresh interval in seconds (default: 0.1s).
+

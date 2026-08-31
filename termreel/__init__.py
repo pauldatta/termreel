@@ -46,6 +46,10 @@ from termreel.generator.explorer import CLIExplorer, CLISpec, SubcommandInfo
 from termreel.generator.scaffold import ScenarioGenerator
 from termreel.batch import BatchOrchestrator, BatchReport, BatchScenarioResult
 from termreel.audit import VideoAuditor, AuditReport, CriterionScore
+from termreel.telemetry.models import SessionMetadata, ScreenSnapshot
+from termreel.telemetry.registry import SessionRegistry
+from termreel.telemetry.server import TelemetryServer
+from termreel.peek import PeekClient
 
 __all__ = [
     "__version__",
@@ -100,4 +104,9 @@ __all__ = [
     "VideoAuditor",
     "AuditReport",
     "CriterionScore",
+    "SessionMetadata",
+    "ScreenSnapshot",
+    "SessionRegistry",
+    "TelemetryServer",
+    "PeekClient",
 ]

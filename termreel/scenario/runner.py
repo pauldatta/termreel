@@ -11,8 +11,12 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from typing import Optional, Dict, Any, List, Union
 from termreel.exceptions import ScenarioValidationError
+from termreel.telemetry.models import SessionMetadata
+from termreel.telemetry.registry import SessionRegistry
+from termreel.telemetry.server import TelemetryServer
 from termreel.emulator.state import TerminalState
 from termreel.emulator.parser import ANSIParser
 from termreel.supervisor.base import BaseSupervisor
@@ -52,6 +56,7 @@ class ScenarioReport:
     error_message: Optional[str] = None
     conversation_id: Optional[str] = None
     workspace_dir: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 
@@ -128,6 +133,34 @@ class ScenarioRunner:
         self._work_dir: str = os.getcwd()
         self._last_captured_ansi = ""
         self.active_conversation_id: Optional[str] = self.manifest.environment.conversation_id
+
+        # Telemetry subsystem initialization
+        self.session_id = uuid.uuid4().hex[:12]
+        self.telemetry_registry = SessionRegistry()
+        session_dir = os.path.join(self.telemetry_registry.directory, self.session_id)
+        socket_path = os.path.join(session_dir, "telemetry.sock")
+        if len(socket_path) > 100:
+            socket_path = f"/tmp/tr_{self.session_id}.sock"
+
+        self.telemetry_metadata = SessionMetadata(
+            session_id=self.session_id,
+            pid=os.getpid(),
+            scenario_title=self.manifest.metadata.title,
+            scenario_path=getattr(self.manifest, "source_file", "") or "",
+            output_video=self.output_file,
+            started_at=time.time(),
+            current_step_index=0,
+            total_steps=len(self.manifest.timeline),
+            current_step_type="",
+            current_step_desc="",
+            fps=self.fps,
+            rendered_frames=0,
+            elapsed_seconds=0.0,
+            socket_path=socket_path,
+            status="running",
+        )
+        self.telemetry_server: Optional[TelemetryServer] = None
+        self.telemetry: Optional[TelemetryServer] = None
 
         self._init_triggers()
 
@@ -337,18 +370,13 @@ class ScenarioRunner:
                     s_right = self._status_right
                     s_pill = self._status_pill
 
-                # Render PyCairo frame to raw BGRA bytes
-                frame_bytes = self.renderer.draw_frame(
-                    term_state=self.state,
-                    banner_card=card,
-                    status_left=s_left,
-                    status_right=s_right,
-                    status_pill=s_pill,
+                # Render PyCairo frame to raw BGRA bytes and stream to FFmpeg
+                self._render_and_write_frame(
+                    card=card,
+                    s_left=s_left,
+                    s_right=s_right,
+                    s_pill=s_pill,
                 )
-
-                # Stream directly to FFmpeg
-                if self.ffmpeg_pipe and self.ffmpeg_pipe.is_open:
-                    self.ffmpeg_pipe.write_frame(frame_bytes)
 
             except Exception as e:
                 # Avoid breaking capture loop on minor frame jitter
@@ -358,6 +386,34 @@ class ScenarioRunner:
             sleep_time = max(0.002, frame_interval - elapsed)
             time.sleep(sleep_time)
 
+    def _render_and_write_frame(
+        self,
+        card: Optional[Dict[str, Any]] = None,
+        s_left: Optional[str] = None,
+        s_right: Optional[str] = None,
+        s_pill: str = "● LIVE TTY",
+    ) -> Optional[bytes]:
+        """Render frame with CairoTerminalRenderer, write to FFmpeg, and update telemetry metrics."""
+        frame_bytes = self.renderer.draw_frame(
+            term_state=self.state,
+            banner_card=card,
+            status_left=s_left,
+            status_right=s_right,
+            status_pill=s_pill,
+        )
+
+        if self.ffmpeg_pipe and self.ffmpeg_pipe.is_open:
+            self.ffmpeg_pipe.write_frame(frame_bytes)
+            frame_cnt = self.ffmpeg_pipe.frame_count
+            elapsed = frame_cnt / float(self.fps) if self.fps > 0 else 0.0
+            if self.telemetry:
+                self.telemetry.update_rendered_frame(
+                    rendered_frames=frame_cnt,
+                    elapsed_seconds=elapsed,
+                )
+
+        return frame_bytes
+
     def run(self) -> ScenarioReport:
         """Execute the full recording scenario."""
         start_time = time.time()
@@ -365,6 +421,19 @@ class ScenarioRunner:
 
         try:
             self._setup_environment()
+
+            # Initialize and start TelemetryServer
+            self.telemetry_server = TelemetryServer(
+                session_id=self.session_id,
+                state=self.state,
+                renderer=self.renderer,
+                metadata=self.telemetry_metadata,
+                registry=self.telemetry_registry,
+            )
+            self.telemetry = self.telemetry_server
+            self.telemetry_registry.register(self.telemetry_metadata)
+            self.telemetry_server.start()
+            self._log(f"Started TelemetryServer: session={self.session_id}, sock={self.telemetry_metadata.socket_path}")
 
             # Initialize FFmpeg transcoder pipe
             self.ffmpeg_pipe = FFmpegPipe(
@@ -396,7 +465,22 @@ class ScenarioRunner:
             self._capture_thread.start()
 
             # Execute timeline steps sequentially
+            total_steps = len(self.manifest.timeline)
             for step_idx, step in enumerate(self.manifest.timeline):
+                step_desc = (
+                    step.params.get("desc")
+                    or step.params.get("title")
+                    or step.params.get("text")
+                    or step.params.get("command")
+                    or str(step.params)
+                )
+                if self.telemetry:
+                    self.telemetry.update_step(
+                        step_idx=step_idx,
+                        total_steps=total_steps,
+                        step_type=step.step_type,
+                        step_desc=step_desc,
+                    )
                 self._execute_step(step, step_idx)
 
         except Exception as e:
@@ -404,6 +488,13 @@ class ScenarioRunner:
             self._log(f"❌ Scenario execution encountered error: {e}")
             raise
         finally:
+            # Tear down telemetry server and unregister session
+            if self.telemetry:
+                status = "failed" if error_msg else "completed"
+                self.telemetry.stop(status=status)
+            if self.telemetry_registry:
+                self.telemetry_registry.unregister(self.session_id)
+
             # Tear down capture loop and finalize encoding
             self._is_recording = False
             if self._capture_thread:
@@ -447,6 +538,7 @@ class ScenarioRunner:
             error_message=error_msg,
             conversation_id=self.active_conversation_id,
             workspace_dir=self._work_dir,
+            session_id=self.session_id,
         )
 
     def _execute_type(self, params: Dict[str, Any]):
