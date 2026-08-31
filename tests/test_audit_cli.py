@@ -205,6 +205,61 @@ class TestAuditCLI(unittest.TestCase):
         self.assertEqual(report.criteria["Visual Stability"].score, 24)
         self.assertEqual(report.findings, ["Gemini multimodal model verified scenario steps."])
 
+    def test_auditor_auto_chunking_execution(self):
+        """Test VideoAuditor windowed chunking on video with chunk_duration < total duration."""
+        # Video is ~21s, so chunk_duration=6.0 should produce ~4 chunks
+        auditor = VideoAuditor(
+            video_path=self.test_video,
+            threshold=80,
+            chunk_duration=6.0,
+            auto_chunk=True,
+        )
+        report = auditor.audit()
+
+        self.assertIsInstance(report, AuditReport)
+        self.assertTrue(report.passed)
+        self.assertGreaterEqual(report.overall_score, 80)
+        self.assertTrue(report.evaluation_mode.startswith("chunked"))
+        self.assertIn("segments", report.metadata)
+        self.assertGreaterEqual(report.metadata["chunk_count"], 3)
+        self.assertEqual(report.metadata["chunk_duration_sec"], 6.0)
+
+        # Verify segments metadata
+        segments = report.metadata["segments"]
+        self.assertEqual(len(segments), report.metadata["chunk_count"])
+        for seg in segments:
+            self.assertIn("segment_index", seg)
+            self.assertIn("start_sec", seg)
+            self.assertIn("end_sec", seg)
+            self.assertIn("score", seg)
+            self.assertGreater(seg["duration"], 0.0)
+
+        # Verify markdown report includes segment breakdown
+        md = report.to_markdown()
+        self.assertIn("Windowed Segment Breakdown", md)
+        self.assertIn("Chunk 1", md)
+        self.assertIn("Chunk 2", md)
+
+    def test_cli_chunk_arguments(self):
+        """Test CLI argument parsing and execution with --chunk-duration and --no-chunk."""
+        parser = build_parser()
+        args = parser.parse_args(["audit", "demo.mp4", "--chunk-duration", "120.0"])
+        self.assertEqual(args.chunk_duration, 120.0)
+        self.assertFalse(args.no_chunk)
+
+        args_no_chunk = parser.parse_args(["audit", "demo.mp4", "--no-chunk"])
+        self.assertTrue(args_no_chunk.no_chunk)
+
+        # Test CLI execution with chunking enabled
+        report_file = os.path.join(self.temp_dir, "chunked_audit.md")
+        code = main(["audit", self.test_video, "--chunk-duration", "7.0", "--report", report_file])
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.exists(report_file))
+        with open(report_file, "r") as f:
+            content = f.read()
+        self.assertIn("Windowed Segment Breakdown", content)
+
 
 if __name__ == "__main__":
     unittest.main()
+

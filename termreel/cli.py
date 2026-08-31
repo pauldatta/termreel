@@ -117,10 +117,13 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--spec", help="Path to scenario YAML manifest or specification file")
     audit_parser.add_argument("--model", default="gemini-3.1-pro-preview", help="Gemini multimodal model name (default: gemini-3.1-pro-preview)")
     audit_parser.add_argument("--threshold", type=int, default=80, help="Pass/fail scorecard score threshold 0-100 (default: 80)")
+    audit_parser.add_argument("--chunk-duration", type=float, default=300.0, help="Maximum segment window in seconds for long video auditing (default: 300.0s / 5 mins)")
+    audit_parser.add_argument("--no-chunk", action="store_true", help="Disable automated windowed chunking for long videos")
     audit_parser.add_argument("--report", help="Destination path to save Markdown or JSON audit report")
     audit_parser.add_argument("--json", action="store_true", help="Output scorecard in JSON format")
 
     return parser
+
 
 
 
@@ -406,8 +409,11 @@ def cmd_audit(args: argparse.Namespace) -> int:
         spec_path=args.spec,
         model_name=args.model,
         threshold=args.threshold,
+        chunk_duration=getattr(args, "chunk_duration", 300.0),
+        auto_chunk=not getattr(args, "no_chunk", False),
     )
     report = auditor.audit()
+
 
     if args.report:
         auditor.save_report(args.report)

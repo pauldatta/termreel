@@ -62,8 +62,11 @@ Performs automated multimodal video verification and scoring against a specifica
 - `--spec <path>`: Path to original scenario YAML manifest, PRD, or test document.
 - `--model <name>`: Multimodal AI model to use (default: `gemini-3.1-pro-preview`).
 - `--threshold <int>`: Minimum passing score out of 100 (default: 80).
+- `--chunk-duration <float>`: Maximum segment window in seconds for long video auditing (default: 300.0s / 5 mins). Automatically prevents exceeding the 1M token context limit on long recordings.
+- `--no-chunk`: Disable automated windowed chunking for long videos.
 - `--report <path>`: Path to save the audit report scorecard (Markdown or JSON).
 - `--json`: Output raw JSON scorecard to stdout.
+
 
 ### `termreel exec`
 ```bash

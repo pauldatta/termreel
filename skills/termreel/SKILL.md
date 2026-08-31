@@ -257,13 +257,24 @@ termreel audit output/service_demo.mp4 \
   --spec scenarios/service_demo.yaml \
   --model gemini-3.1-pro-preview \
   --threshold 80 \
+  --chunk-duration 300.0 \
   --report AUDIT_REPORT.md
 ```
+
+#### Automated Windowed Chunking for Long Videos (1M Context Limit)
+Gemini video input samples at ~1 FPS (~258 tokens per second). Videos longer than 30–45 minutes quickly approach or exceed the 1M token context limit when combined with large PRDs and manifests.
+
+TermReel solves this with **automated windowed map-reduce auditing**:
+- When duration exceeds `--chunk-duration` (default: 300s / 5 minutes), TermReel instantaneously slices the video into lossless segments using FFmpeg stream copy (`-c copy`).
+- Each segment is independently verified in context without context dilution or overflow.
+- Scores and findings are rolled up into a unified 100-point scorecard with a `Windowed Segment Breakdown` table and globally re-mapped timestamps.
+
 TermReel grades:
 1. **Visual Stability**: Resolution, framerate, and container health.
 2. **TUI Formatting**: Color contrast, dark mode window chrome, aspect ratio.
 3. **Execution Completion**: Progression of commands and resting prompt state.
 4. **Error-Free Output**: Absence of uncaught stack traces or abrupt exits.
+
 
 ---
 

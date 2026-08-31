@@ -107,6 +107,24 @@ class AuditReport:
         for f in self.findings:
             lines.append(f"- {f}")
 
+        if self.metadata.get("segments"):
+            lines.extend([
+                "",
+                "---",
+                "",
+                "### 🧩 Windowed Segment Breakdown",
+                "| Segment | Window | Score | Status | Findings |",
+                "| :--- | :---: | :---: | :---: | :--- |",
+            ])
+            for seg in self.metadata["segments"]:
+                idx = seg.get("segment_index", 1)
+                start = seg.get("start_sec", 0.0)
+                end = seg.get("end_sec", 0.0)
+                score = seg.get("score", 0)
+                status = "✅ Pass" if seg.get("passed", True) else "❌ Fail"
+                note = seg.get("summary", "")
+                lines.append(f"| **Chunk {idx}** | {start:.1f}s – {end:.1f}s | {score} / 100 | {status} | {note} |")
+
         if self.timestamped_notes:
             lines.extend([
                 "",
@@ -121,6 +139,7 @@ class AuditReport:
 
         lines.append("")
         return "\n".join(lines)
+
 
     def save(self, path: str):
         """Save report to disk as JSON or Markdown based on file extension."""
@@ -143,11 +162,16 @@ class VideoAuditor:
         spec_path: Optional[str] = None,
         model_name: str = "gemini-3.1-pro-preview",
         threshold: int = 80,
+        chunk_duration: float = 300.0,
+        auto_chunk: bool = True,
     ):
         self.video_path = os.path.abspath(video_path)
         self.spec_path = os.path.abspath(spec_path) if spec_path else None
         self.model_name = model_name
         self.threshold = int(threshold)
+        self.chunk_duration = float(chunk_duration)
+        self.auto_chunk = bool(auto_chunk)
+
 
     def _probe_video(self) -> Dict[str, Any]:
         """Inspect video streams and container metadata via ffprobe."""
@@ -639,8 +663,143 @@ Return a strict JSON object with this exact structure:
             metadata=metadata,
         )
 
+    def _slice_segment(self, start_sec: float, duration_sec: float, output_path: str) -> bool:
+        """Losslessly slice a segment from the video using FFmpeg stream copy."""
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss", f"{start_sec:.2f}",
+            "-t", f"{duration_sec:.2f}",
+            "-i", self.video_path,
+            "-c", "copy",
+            "-avoid_negative_ts", "1",
+            output_path,
+        ]
+        res = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True)
+        return res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0
+
+    def _audit_chunked(
+        self,
+        duration: float,
+        metadata: Dict[str, Any],
+        spec_content: Optional[str],
+        spec_data: Optional[Dict[str, Any]],
+    ) -> AuditReport:
+        """Slices long video into segments, audits each chunk, and aggregates findings."""
+        import math
+        import tempfile
+
+        num_chunks = int(math.ceil(duration / self.chunk_duration))
+        temp_dir = tempfile.mkdtemp(prefix="termreel_audit_chunks_")
+        chunk_reports: List[AuditReport] = []
+        segments_meta: List[Dict[str, Any]] = []
+
+        try:
+            for idx in range(num_chunks):
+                start_sec = round(idx * self.chunk_duration, 2)
+                chunk_len = round(min(self.chunk_duration, duration - start_sec), 2)
+                end_sec = round(start_sec + chunk_len, 2)
+
+                chunk_filename = os.path.join(temp_dir, f"chunk_{idx+1:03d}.mp4")
+                sliced = self._slice_segment(start_sec, chunk_len, chunk_filename)
+                if not sliced:
+                    chunk_filename = self.video_path
+
+                # Audit segment using a non-chunked sub-auditor
+                sub_auditor = VideoAuditor(
+                    video_path=chunk_filename,
+                    spec_path=self.spec_path,
+                    model_name=self.model_name,
+                    threshold=self.threshold,
+                    chunk_duration=self.chunk_duration,
+                    auto_chunk=False,
+                )
+                sub_report = sub_auditor.audit()
+                chunk_reports.append(sub_report)
+
+                segments_meta.append({
+                    "segment_index": idx + 1,
+                    "total_segments": num_chunks,
+                    "start_sec": start_sec,
+                    "end_sec": end_sec,
+                    "duration": chunk_len,
+                    "score": sub_report.overall_score,
+                    "passed": sub_report.passed,
+                    "summary": f"{len(sub_report.findings)} findings; score {sub_report.overall_score}/100",
+                })
+
+            # Map-Reduce Aggregation
+            overall_score = round(sum(r.overall_score for r in chunk_reports) / len(chunk_reports)) if chunk_reports else 0
+            passed = overall_score >= self.threshold and all(r.passed for r in chunk_reports)
+
+            # Aggregate criteria
+            crit_names = ["Visual Stability", "TUI Formatting", "Execution Completion", "Error-Free Output"]
+            aggregated_criteria: Dict[str, CriterionScore] = {}
+            for crit in crit_names:
+                avg_crit_score = round(sum(r.criteria[crit].score for r in chunk_reports) / len(chunk_reports)) if chunk_reports else 0
+                all_crit_notes = [f"Chunk {i+1}: {r.criteria[crit].notes}" for i, r in enumerate(chunk_reports) if r.criteria.get(crit)]
+                aggregated_criteria[crit] = CriterionScore(
+                    name=crit,
+                    score=avg_crit_score,
+                    max_score=25,
+                    status="pass" if avg_crit_score >= 18 else "fail",
+                    notes="; ".join(all_crit_notes[:4]),
+                )
+
+            # Aggregate checklist (must pass across all chunks)
+            checklist_keys = ["Visual Clarity", "Command Execution", "No Unhandled Exceptions", "Clean Prompt Termination"]
+            aggregated_checklist = {
+                k: all(r.checklist.get(k, False) for r in chunk_reports)
+                for k in checklist_keys
+            }
+
+            # Aggregate findings with chunk offsets
+            aggregated_findings: List[str] = [
+                f"Automated windowed evaluation across {num_chunks} segments (chunk window: {self.chunk_duration:.1f}s)."
+            ]
+            for i, r in enumerate(chunk_reports):
+                start = segments_meta[i]["start_sec"]
+                end = segments_meta[i]["end_sec"]
+                for f in r.findings:
+                    aggregated_findings.append(f"[Chunk {i+1} ({start:.1f}s–{end:.1f}s)] {f}")
+
+            # Re-map timestamped notes to global video timestamps
+            aggregated_timestamps: List[Dict[str, Any]] = []
+            for i, r in enumerate(chunk_reports):
+                start = segments_meta[i]["start_sec"]
+                for tn in r.timestamped_notes:
+                    rel_ts = tn.get("timestamp", 0.0)
+                    global_ts = round(start + rel_ts, 2)
+                    aggregated_timestamps.append({
+                        "timestamp": global_ts,
+                        "note": f"[Chunk {i+1}] {tn.get('note', '')}",
+                    })
+
+            metadata["segments"] = segments_meta
+            metadata["chunk_count"] = num_chunks
+            metadata["chunk_duration_sec"] = self.chunk_duration
+
+            eval_mode = f"chunked_{chunk_reports[0].evaluation_mode}" if chunk_reports else "chunked"
+
+            return AuditReport(
+                video_path=self.video_path,
+                spec_path=self.spec_path,
+                overall_score=overall_score,
+                threshold=self.threshold,
+                passed=passed,
+                evaluation_mode=eval_mode,
+                checklist=aggregated_checklist,
+                criteria=aggregated_criteria,
+                findings=aggregated_findings,
+                timestamped_notes=aggregated_timestamps,
+                metadata=metadata,
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def audit(self) -> AuditReport:
         """Run multimodal evaluation or fallback to local heuristic audit."""
+
         if not os.path.exists(self.video_path):
             empty_criteria = {
                 k: CriterionScore(name=k, score=0, max_score=25, status="fail", notes="File not found")
@@ -706,7 +865,17 @@ Return a strict JSON object with this exact structure:
                 except Exception:
                     pass
 
-        # 3. Extract sample keyframes across video duration
+        # 3. Check if video duration exceeds chunk threshold and auto-chunking is enabled
+        if self.auto_chunk and duration > self.chunk_duration and self.chunk_duration >= 1.0:
+            return self._audit_chunked(
+                duration=duration,
+                metadata=metadata,
+                spec_content=spec_content,
+                spec_data=spec_data,
+            )
+
+        # 4. Extract sample keyframes across video duration
+
         if duration <= 0.5:
             timestamps = [max(0.05, duration / 2)]
         elif duration <= 2.0:
