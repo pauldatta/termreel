@@ -2,10 +2,12 @@
 Asciinema v2 (.cast) recording and playback support.
 """
 
+import codecs
 import json
 import os
+import threading
 import time
-from typing import Optional, Dict, List, Tuple, Generator, Any
+from typing import Optional, Dict, List, Tuple, Generator, Any, Callable
 
 
 class AsciicastRecorder:
@@ -20,6 +22,9 @@ class AsciicastRecorder:
         height: int = 30,
         title: str = "TermReel Session",
         env: Optional[Dict[str, str]] = None,
+        redactor: Optional[Any] = None,
+        clock: Optional[Callable[[], float]] = None,
+        flush_interval: float = 0.5,
     ):
         self.filepath = filepath
         self.width = width
@@ -27,15 +32,34 @@ class AsciicastRecorder:
         self.title = title
         self.env = env or {"TERM": "xterm-256color", "COLORTERM": "truecolor"}
 
+        # Redaction is applied to the rendered grid elsewhere; without this the
+        # .cast stream is a verbatim, unmasked copy of everything the child
+        # printed, secrets included.
+        self.redactor = redactor
+
+        # Elapsed-time source. Defaults to wall clock since start(). A live
+        # recording that cuts paused segments out of the video passes its own
+        # clock so cast timestamps stay in sync with the trimmed footage.
+        self.clock = clock
+
+        self.flush_interval = max(0.0, flush_interval)
+
         self.file = None
         self.start_time: Optional[float] = None
         self.event_count = 0
+
+        # Incremental decoder: a UTF-8 character can straddle two reads of the
+        # PTY master, and a plain bytes.decode() per chunk mangles it.
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._last_flush = 0.0
+        self._lock = threading.RLock()
 
     def start(self):
         """Open file and write Asciinema v2 header."""
         os.makedirs(os.path.dirname(os.path.abspath(self.filepath)), exist_ok=True)
         self.file = open(self.filepath, "w", encoding="utf-8")
         self.start_time = time.time()
+        self._last_flush = self.start_time
 
         header = {
             "version": 2,
@@ -48,9 +72,31 @@ class AsciicastRecorder:
         self.file.write(json.dumps(header) + "\n")
         self.file.flush()
 
+    def elapsed(self) -> float:
+        """Timestamp for the next event, in seconds since recording started."""
+        if self.clock is not None:
+            return max(0.0, float(self.clock()))
+        if self.start_time is None:
+            return 0.0
+        return max(0.0, time.time() - self.start_time)
+
     def record_output(self, data: str):
         """Record an stdout event."""
         self.record_event("o", data)
+
+    def record_output_bytes(self, data: bytes):
+        """
+        Record an stdout event from raw PTY bytes.
+
+        Decoding is stateful across calls, so a character split across chunk
+        boundaries is emitted once, whole, with the chunk that completes it.
+        """
+        if not data:
+            return
+        with self._lock:
+            text = self._decoder.decode(data)
+        if text:
+            self.record_event("o", text)
 
     def record_input(self, data: str):
         """Record an stdin event."""
@@ -60,15 +106,42 @@ class AsciicastRecorder:
         """Record a generic event line: [elapsed_sec, type, data]."""
         if not self.file or self.start_time is None:
             return
-        elapsed = round(time.time() - self.start_time, 6)
+        if self.redactor is not None:
+            try:
+                data = self.redactor.redact_text(data)
+            except Exception:
+                pass
+        elapsed = round(self.elapsed(), 6)
         line = json.dumps([elapsed, event_type, data])
-        self.file.write(line + "\n")
-        self.file.flush()
-        self.event_count += 1
+        with self._lock:
+            if not self.file:
+                return
+            self.file.write(line + "\n")
+            self.event_count += 1
+            now = time.time()
+            if self.flush_interval <= 0.0 or (now - self._last_flush) >= self.flush_interval:
+                self.file.flush()
+                self._last_flush = now
 
     def close(self):
-        """Close the asciicast file."""
-        if self.file:
+        """Flush the incremental decoder and close the asciicast file."""
+        with self._lock:
+            if not self.file:
+                return
+            # Drain any bytes the decoder is still holding for a partial
+            # character so a truncated tail is not silently dropped.
+            try:
+                tail = self._decoder.decode(b"", final=True)
+            except Exception:
+                tail = ""
+            if tail:
+                if self.redactor is not None:
+                    try:
+                        tail = self.redactor.redact_text(tail)
+                    except Exception:
+                        pass
+                self.file.write(json.dumps([round(self.elapsed(), 6), "o", tail]) + "\n")
+                self.event_count += 1
             self.file.close()
             self.file = None
 

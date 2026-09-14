@@ -132,6 +132,27 @@ def build_parser() -> argparse.ArgumentParser:
     peek_parser.add_argument("--raw", action="store_true", help="Output raw plain screen text without HUD banner")
     peek_parser.add_argument("--interval", type=float, default=0.1, help="Refresh interval for follow mode in seconds (default: 0.1)")
 
+    # 13. live
+    live_parser = subparsers.add_parser("live", help="Record your own interactive terminal session, driven by hand")
+    live_parser.add_argument("command", nargs="?", default=None, help="Command to run (default: $SHELL, or bash)")
+    live_parser.add_argument("-o", "--output", default="output/live.mp4", help="Output video path (default: output/live.mp4)")
+    live_parser.add_argument("--fps", type=int, default=15, help="Frames per second (default: 15)")
+    live_parser.add_argument("--theme", default="catppuccin-mocha", help="Visual theme")
+    live_parser.add_argument("--title", default="TermReel Live", help="Window title")
+    live_parser.add_argument("--subtitle", default="Live Capture", help="Window subtitle")
+    live_parser.add_argument("--cols", type=int, help="Lock the recording grid to this many columns")
+    live_parser.add_argument("--rows", type=int, help="Lock the recording grid to this many rows")
+    live_parser.add_argument("--resolution", help="Canvas size as WIDTHxHEIGHT (default: 1280x720)")
+    live_parser.add_argument("--crossfade", type=float, default=0.25, help="Crossfade duration in seconds across a cut (default: 0.25)")
+    live_parser.add_argument("--hard-cuts", action="store_true", help="Cut straight from pause to resume with no crossfade")
+    live_parser.add_argument("--prefix", help="Hotkey prefix, e.g. 'C-t' (default: C-t; also $TERMREEL_PREFIX or ~/.termreel/config.yaml)")
+    live_parser.add_argument("--cast", help="Also write an Asciinema v2 .cast log to this path")
+    live_parser.add_argument("--cwd", help="Working directory for the recorded command")
+    live_parser.add_argument("--preset", default="veryfast", help="x264 preset (default: veryfast)")
+    live_parser.add_argument("--crf", type=int, default=20, help="x264 CRF quality (default: 20)")
+    live_parser.add_argument("--keys", action="store_true", help="Report what bytes your terminal sends for each key, then exit")
+    live_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress status logging")
+
     return parser
 
 
@@ -481,6 +502,79 @@ def cmd_peek(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_live(args: argparse.Namespace) -> int:
+    from termreel.exceptions import KeySpecError, TermReelError
+    from termreel.live.config import resolve_prefix
+    from termreel.live.keyprobe import run_key_probe
+    from termreel.live.recorder import LiveRecorder
+
+    if getattr(args, "keys", False):
+        return run_key_probe()
+
+    # Resolve and validate the hotkey before the terminal is touched. A bad
+    # binding must fail while the shell is still in a normal state.
+    try:
+        prefix = resolve_prefix(cli_value=getattr(args, "prefix", None))
+    except KeySpecError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+    width = height = None
+    if getattr(args, "resolution", None):
+        try:
+            w_str, h_str = str(args.resolution).lower().split("x", 1)
+            width, height = int(w_str), int(h_str)
+        except ValueError:
+            print(f"❌ Invalid --resolution '{args.resolution}'. Use WIDTHxHEIGHT, e.g. 1280x720.", file=sys.stderr)
+            return 1
+
+    recorder = LiveRecorder(
+        command=args.command,
+        output=args.output,
+        fps=args.fps,
+        theme=args.theme,
+        title=args.title,
+        subtitle=args.subtitle,
+        cols=args.cols,
+        rows=args.rows,
+        width=width,
+        height=height,
+        crossfade=args.crossfade,
+        hard_cuts=args.hard_cuts,
+        prefix=prefix,
+        cast=args.cast,
+        cwd=args.cwd,
+        preset=args.preset,
+        crf=args.crf,
+        verbose=not args.quiet,
+    )
+
+    try:
+        report = recorder.run()
+    except TermReelError as e:
+        print(f"❌ {e}", file=sys.stderr)
+        return 1
+
+    if report.status != "pass":
+        print(f"❌ Live recording failed: {report.error_message}", file=sys.stderr)
+        return 1
+
+    print(
+        f"✨ Recorded {report.output_file} "
+        f"({report.frames_written} frames, {report.video_seconds:.1f}s video, "
+        f"{report.file_size_bytes / 1024:.1f} KB)"
+    )
+    if report.paused_seconds > 0:
+        print(f"⏸  Cut {report.paused_seconds:.1f}s of paused time from the video.")
+    if report.marks:
+        print("🔖 Marks: " + ", ".join(f"{m:.1f}s" for m in report.marks))
+    if report.cast_file:
+        print(f"🎞  Asciicast: {report.cast_file}")
+    if report.frame_errors:
+        print(f"⚠️  {report.frame_errors} frame(s) failed to render.", file=sys.stderr)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -513,6 +607,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_audit(args)
     elif args.subcommand == "peek":
         return cmd_peek(args)
+    elif args.subcommand == "live":
+        return cmd_live(args)
 
     return 0
 

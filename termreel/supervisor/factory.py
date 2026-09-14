@@ -3,7 +3,7 @@ Factory for instantiating terminal supervisors based on backend preference and p
 """
 
 import shutil
-from typing import Optional, Dict
+from typing import Any, Callable, Optional, Dict
 from termreel.supervisor.base import BaseSupervisor
 from termreel.supervisor.tmux_session import TmuxSupervisor
 from termreel.supervisor.pty_session import PtySupervisor
@@ -22,12 +22,21 @@ def create_supervisor(
     cols: int = 100,
     session_name: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
+    state: Optional[Any] = None,
+    parser: Optional[Any] = None,
+    on_output: Optional[Callable[[bytes], None]] = None,
 ) -> BaseSupervisor:
     """
     Create a terminal supervisor.
     - backend='tmux': Use tmux session (recommended for full TUI capture)
     - backend='pty': Use native POSIX openpty
     - backend='auto': Use tmux if available, otherwise fall back to pty
+
+    ``state``, ``parser`` and ``on_output`` apply to the PTY backend only. They
+    let the caller have the supervisor's single reader parse straight into the
+    TerminalState the renderer draws from, and mirror the raw child bytes
+    somewhere else. The tmux backend is polled via capture-pane instead and
+    has no equivalent, so these are ignored there.
     """
     selected = backend.lower().strip()
     if selected == "auto":
@@ -49,6 +58,9 @@ def create_supervisor(
             rows=rows,
             cols=cols,
             env=env,
+            state=state,
+            parser=parser,
+            on_output=on_output,
         )
     else:
         raise ValueError(f"Unknown terminal supervisor backend: '{backend}'. Choose 'auto', 'tmux', or 'pty'.")

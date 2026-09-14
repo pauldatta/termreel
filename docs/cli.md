@@ -9,6 +9,7 @@ TermReel provides a unified command-line tool `termreel` (aliased as `reccli`).
 | Command | Purpose | Example |
 | :--- | :--- | :--- |
 | `termreel record` | Record video from declarative scenario YAML | `termreel record scenario.yaml -o out.mp4` |
+| `termreel live` | Record your own terminal session, driven by hand | `termreel live -o demo.mp4 --theme tokyo-night` |
 | `termreel exec` | Record a single command directly to video | `termreel exec "git log" -o log.mp4` |
 | `termreel cast2video` | Convert Asciinema `.cast` file to MP4/GIF | `termreel cast2video log.cast -o replay.mp4` |
 | `termreel validate` | Validate scenario YAML syntax & schema | `termreel validate scenario.yaml` |
@@ -39,6 +40,107 @@ termreel record <scenario.yaml> [options]
 - `--workspace <path>`: Attach to an existing workspace directory.
 - `--preserve-workspace`: Keep temporary workspace directory intact after recording.
 - `-q, --quiet`: Suppress verbose logging.
+
+### `termreel live`
+```bash
+termreel live [command] [options]
+```
+Records **your own** interactive terminal session. You drive the shell by hand;
+TermReel encodes what happens. Unlike `record`, there is no manifest and no
+keystroke simulation.
+
+```bash
+termreel live -o demo.mp4 --theme tokyo-night
+#  ● Recording — drive your terminal normally.  ^T p pause  ^T q stop
+```
+
+- `command`: Command to run (default: `$SHELL`, falling back to `bash`).
+- `-o, --output <path>`: Output video path (default: `output/live.mp4`).
+- `--fps <int>`: Frames per second (default: 15 — hand typing does not need 30).
+- `--theme <name>`: Visual theme.
+- `--title <str>` / `--subtitle <str>`: Window chrome text.
+- `--cols <int>` / `--rows <int>`: Lock the recording grid; the canvas size is derived from it.
+- `--resolution <WxH>`: Canvas size in pixels (default: `1280x720`, which is a 131x29 grid).
+- `--crossfade <float>`: Crossfade duration across a cut, in seconds (default: 0.25).
+- `--hard-cuts`: Jump straight from pause to resume with no crossfade.
+- `--prefix <key>`: Hotkey prefix (default: `C-t`).
+- `--cast <path>`: Also write an Asciinema v2 `.cast` log.
+- `--cwd <path>`: Working directory for the recorded command.
+- `--preset <name>` / `--crf <int>`: x264 encoder settings (defaults: `veryfast`, 20).
+- `--keys`: Report what bytes your terminal sends for each key, then exit.
+- `-q, --quiet`: Suppress status logging.
+
+#### Hotkeys
+
+All controls are a prefix keystroke followed by one key.
+
+| Keys | Effect |
+| :--- | :--- |
+| `^T p` or `^T Space` | Pause / resume recording |
+| `^T r` | Resume |
+| `^T m` | Mark the current position |
+| `^T q` | Stop and finalise the video |
+| `^T ?` | Print the hotkey reminder |
+| `^T ^T` | Send a literal prefix keystroke to the shell |
+
+Pausing stops **recording**, not the shell. The child process keeps running;
+TermReel simply stops writing frames, so the paused interval is cut out of the
+finished video. On resume the last pre-pause frame is crossfaded into the first
+post-resume frame, which is what signals the cut to the viewer — a `PAUSED`
+caption can never appear in the output, because paused frames are never written.
+
+Anything typed inside a bracketed paste is forwarded verbatim, prefix byte
+included, so pasting text that happens to contain `^T` cannot trigger a control.
+
+#### Rebinding the prefix
+
+Resolution order, highest priority first:
+
+```
+--prefix  ->  $TERMREEL_PREFIX  ->  ~/.termreel/config.yaml  ->  C-t
+```
+
+```yaml
+# ~/.termreel/config.yaml
+live:
+  prefix: "C-a"
+```
+
+Accepted forms are `C-t`, `ctrl+t`, `ctrl-t`, `^T`, `C-]`, and `0x14`.
+
+The default is `C-t` (`0x14`). On a Mac the usable key pool is small: Command
+never reaches the terminal, Option emits accented characters unless you enable
+"Use Option as Meta", and the shell owns most of Control. Single-letter Ctrl
+combinations are the only class that transmits identically across every Mac
+keyboard layout.
+
+`C-c`, `C-d`, `C-s`, `C-q`, `C-z`, `C-\` and `Escape` are **refused** with an
+explanation rather than accepted — the recorded shell needs them, and `C-s`
+would freeze your terminal with no way out.
+
+To find out what your own keyboard actually sends:
+
+```bash
+termreel live --keys
+# Press any key to see what your terminal sends.  Ctrl-C to exit.
+#   -> 0x14         C-t          OK  safe. Suggested config: prefix: "C-t"
+#   -> 0x01         C-a          !!  readline beginning-of-line; also the tmux prefix on many setups
+```
+
+#### Control from another terminal
+
+The session registers with the telemetry socket, so `termreel peek` works
+during a live recording and the socket also accepts `PAUSE`, `RESUME`,
+`TOGGLE_PAUSE` and `STOP`. That is the fallback for when a hotkey collides
+with something your shell or TUI has already claimed.
+
+#### Notes
+
+- `termreel live` requires an interactive terminal on stdin and exits with an error otherwise.
+- The canvas is locked for the whole recording, but the recorded shell follows your window: resize mid-session and the child is resized with you, clamped to the locked grid. Shrinking letterboxes; growing past the locked grid logs a warning once and the extra area is not captured.
+- `.gif` output buffers the entire stream through a palette filtergraph, so nothing lands on disk until you stop. Prefer `.mp4`.
+- Above roughly 1920x1080 the renderer warns: frame production alone consumes a large share of the frame budget at that size, and the encoder may apply backpressure. Use `--cols/--rows` to pick a smaller grid.
+- Because raw mode means TermReel has no Ctrl-C of its own, `^T q` is the ordinary way out. `SIGTERM` and `SIGHUP` — closing the window, or a plain `kill` — also stop the recording cleanly: the video is finalised, the `.cast` is flushed, the recorded shell is terminated and the terminal is restored. A second signal force-exits. Background jobs you started inside the recorded shell have their own process groups and are left running, the same as when the recording ends normally.
 
 ### `termreel batch`
 ```bash

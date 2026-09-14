@@ -13,6 +13,80 @@ from termreel.renderer.chrome import ChromeRenderer
 from termreel.renderer.cards import CardRenderer
 
 
+# Fixed chrome geometry shared by CairoTerminalRenderer and the grid/pixel
+# conversion helpers below. Changing these without changing the helpers would
+# silently desynchronise `--cols/--rows` from the grid actually rendered.
+DEFAULT_MARGIN_X = 32
+DEFAULT_MARGIN_Y = 24
+DEFAULT_TITLEBAR_H = 38
+DEFAULT_STATUSBAR_H = 28
+TERM_PADDING_X = 16.0
+TERM_PADDING_Y = 10.0
+
+# One extra pixel on each axis of slack, so that floating-point rounding in
+# `term_w // char_width` can never land one column short of the request.
+_GRID_SLACK_PX = 2
+
+
+def measure_cell(
+    font_family: str = "DejaVu Sans Mono",
+    font_size: float = 14.5,
+) -> Tuple[float, float]:
+    """
+    Measure (char_width, line_height) for a monospace font, exactly the way
+    CairoTerminalRenderer.__init__ does.
+    """
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 8, 8)
+    ctx = cairo.Context(surface)
+    ctx.select_font_face(font_family, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+    ctx.set_font_size(font_size)
+    extents = ctx.text_extents("M")
+    char_width = extents.x_advance if extents.x_advance > 0 else (font_size * 0.6)
+    return char_width, font_size * 1.35
+
+
+def _chrome_overhead() -> Tuple[float, float]:
+    """Pixels consumed by window chrome on each axis."""
+    horizontal = (2 * DEFAULT_MARGIN_X) + (2 * TERM_PADDING_X)
+    vertical = (2 * DEFAULT_MARGIN_Y) + DEFAULT_TITLEBAR_H + DEFAULT_STATUSBAR_H + (2 * TERM_PADDING_Y)
+    return horizontal, vertical
+
+
+def grid_for_pixels(
+    width: int,
+    height: int,
+    font_family: str = "DejaVu Sans Mono",
+    font_size: float = 14.5,
+) -> Tuple[int, int]:
+    """Columns and rows that fit in a width x height canvas."""
+    char_width, line_height = measure_cell(font_family, font_size)
+    h_overhead, v_overhead = _chrome_overhead()
+    cols = max(10, int((width - h_overhead) // char_width))
+    rows = max(5, int((height - v_overhead) // line_height))
+    return cols, rows
+
+
+def pixels_for_grid(
+    cols: int,
+    rows: int,
+    font_family: str = "DejaVu Sans Mono",
+    font_size: float = 14.5,
+) -> Tuple[int, int]:
+    """
+    Smallest canvas that yields exactly `cols` x `rows`.
+
+    Inverse of grid_for_pixels: feeding this result back through
+    grid_for_pixels returns the same grid.
+    """
+    cols = max(10, int(cols))
+    rows = max(5, int(rows))
+    char_width, line_height = measure_cell(font_family, font_size)
+    h_overhead, v_overhead = _chrome_overhead()
+    width = int(math.ceil(cols * char_width) + h_overhead + _GRID_SLACK_PX)
+    height = int(math.ceil(rows * line_height) + v_overhead + _GRID_SLACK_PX)
+    return width, height
+
+
 class CairoTerminalRenderer:
     """
     Renders 2D TerminalState grids into high-fidelity raster frames with custom
@@ -88,6 +162,7 @@ class CairoTerminalRenderer:
         status_right: Optional[str] = None,
         status_pill: str = "● LIVE TTY",
         cursor_pulse: float = 1.0,
+        status_color: Optional[Tuple[float, float, float]] = None,
     ) -> bytes:
         """
         Renders a full frame and returns raw BGRA/ARGB byte buffer.
@@ -117,6 +192,7 @@ class CairoTerminalRenderer:
             title=self.title,
             subtitle=self.subtitle,
             status_text=status_pill,
+            status_color=status_color,
         )
 
         # 3. Bottom Statusbar

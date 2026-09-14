@@ -3,8 +3,11 @@ Natural human typing simulation, jitter generation, typo injection, and key mapp
 """
 
 import random
+import re
 import time
 from typing import List, Tuple, Dict, Optional, Generator
+
+from termreel.exceptions import KeySpecError
 
 
 # Adjacent keys on standard QWERTY layout for realistic typo generation
@@ -100,57 +103,6 @@ class KeyMap:
         "ctrl+e": "C-e",
     }
 
-    _PTY_MAP: Dict[str, str] = {
-        "enter": "\r",
-        "return": "\r",
-        "\r": "\r",
-        "\n": "\r",
-        "esc": "\x1b",
-        "escape": "\x1b",
-        "\x1b": "\x1b",
-        "tab": "\t",
-        "\t": "\t",
-        "backspace": "\x7f",
-        "bspace": "\x7f",
-        "\x7f": "\x7f",
-        "space": " ",
-        " ": " ",
-        "up": "\x1b[A",
-        "down": "\x1b[B",
-        "right": "\x1b[C",
-        "left": "\x1b[D",
-        "home": "\x1b[H",
-        "end": "\x1b[F",
-        "pageup": "\x1b[5~",
-        "pgup": "\x1b[5~",
-        "pagedown": "\x1b[6~",
-        "pgdn": "\x1b[6~",
-        "c-c": "\x03",
-        "ctrl+c": "\x03",
-        "ctrl-c": "\x03",
-        "c-d": "\x04",
-        "ctrl+d": "\x04",
-        "ctrl-d": "\x04",
-        "c-o": "\x0f",
-        "ctrl+o": "\x0f",
-        "ctrl-o": "\x0f",
-        "c-l": "\x0c",
-        "ctrl+l": "\x0c",
-        "ctrl-l": "\x0c",
-        "c-z": "\x1a",
-        "ctrl+z": "\x1a",
-        "ctrl-z": "\x1a",
-        "c-j": "\n",
-        "ctrl+j": "\n",
-        "c-u": "\x15",
-        "ctrl+u": "\x15",
-        "c-w": "\x17",
-        "ctrl+w": "\x17",
-        "c-a": "\x01",
-        "ctrl+a": "\x01",
-        "c-e": "\x05",
-        "ctrl+e": "\x05",
-    }
 
     @classmethod
     def to_tmux(cls, key: str) -> str:
@@ -160,9 +112,168 @@ class KeyMap:
 
     @classmethod
     def to_pty(cls, key: str) -> str:
-        """Map key name or alias to ANSI escape sequence or ASCII character."""
-        k = key.strip().lower()
-        return cls._PTY_MAP.get(k, key)
+        """
+        Map a key specification to the bytes a terminal actually sends.
+
+        Raises KeySpecError for anything unrecognised. See parse_key_spec.
+        """
+        return parse_key_spec(key)
+
+
+# Control characters reachable via Ctrl that are not plain letters.
+# Ctrl masks off the top three bits, which is exactly `ord(c) & 0x1f` for the
+# ASCII range 0x40-0x5f, so these are the punctuation members of that range.
+_CTRL_PUNCTUATION: Dict[str, str] = {
+    "@": "\x00",
+    "space": "\x00",
+    "[": "\x1b",
+    "\\": "\x1c",
+    "]": "\x1d",
+    "^": "\x1e",
+    "_": "\x1f",
+    # Not an & 0x1f result: terminals send DEL for Ctrl-?.
+    "?": "\x7f",
+}
+
+# Specs that name a byte sequence directly rather than a Ctrl combination.
+_NAMED_KEYS: Dict[str, str] = {
+    "enter": "\r",
+    "return": "\r",
+    "esc": "\x1b",
+    "escape": "\x1b",
+    "tab": "\t",
+    "backspace": "\x7f",
+    "bspace": "\x7f",
+    "space": " ",
+    "up": "\x1b[A",
+    "down": "\x1b[B",
+    "right": "\x1b[C",
+    "left": "\x1b[D",
+    "home": "\x1b[H",
+    "end": "\x1b[F",
+    "pageup": "\x1b[5~",
+    "pgup": "\x1b[5~",
+    "pagedown": "\x1b[6~",
+    "pgdn": "\x1b[6~",
+}
+
+# Raw byte values accepted verbatim, before any whitespace stripping.
+_LITERAL_KEYS: Dict[str, str] = {
+    "\r": "\r",
+    "\n": "\r",
+    "\x1b": "\x1b",
+    "\t": "\t",
+    "\x7f": "\x7f",
+    " ": " ",
+}
+
+_HEX_SPEC = re.compile(r"^0x([0-9a-f]{1,2})$")
+_CTRL_SPEC = re.compile(r"^(?:c|ctrl|control)[-+](.+)$")
+
+
+def parse_key_spec(spec: str) -> str:
+    """
+    Parse a key specification into the exact characters a terminal transmits.
+
+    Accepted forms:
+
+    ==================  ==========================================
+    ``Enter`` ``Up``    named keys (case-insensitive)
+    ``C-t``             Ctrl combination -> ``chr(ord(c) & 0x1f)``
+    ``ctrl+t``          same, alternate spelling
+    ``^T``              same, caret notation
+    ``C-]``             Ctrl punctuation -> 0x1d
+    ``0x14``            explicit byte value
+    ``none``            deliberately unbound -> empty string
+    ``y``               any single printable character, literally
+    ==================  ==========================================
+
+    Anything else raises KeySpecError. This is deliberate: the old behaviour
+    was to return the unrecognised spec unchanged, which meant `send_key: C-t`
+    typed the three characters "C-t" into the recorded session and the only
+    way to notice was to watch the video.
+    """
+    if not isinstance(spec, str):
+        raise KeySpecError(f"Key specification must be a string, got {type(spec).__name__}: {spec!r}")
+
+    if spec in _LITERAL_KEYS:
+        return _LITERAL_KEYS[spec]
+
+    raw = spec.strip()
+    if not raw:
+        raise KeySpecError("Key specification is empty.")
+
+    lowered = raw.lower()
+
+    if lowered in ("none", "off", "disabled"):
+        return ""
+
+    if lowered in _NAMED_KEYS:
+        return _NAMED_KEYS[lowered]
+
+    hex_match = _HEX_SPEC.match(lowered)
+    if hex_match:
+        value = int(hex_match.group(1), 16)
+        if value > 0xFF:
+            raise KeySpecError(f"Byte value out of range in key specification: {spec!r}")
+        return chr(value)
+
+    ctrl_target: Optional[str] = None
+    ctrl_match = _CTRL_SPEC.match(lowered)
+    if ctrl_match:
+        ctrl_target = ctrl_match.group(1)
+    elif len(raw) == 2 and raw[0] == "^":
+        ctrl_target = raw[1].lower()
+
+    if ctrl_target is not None:
+        if ctrl_target in _CTRL_PUNCTUATION:
+            return _CTRL_PUNCTUATION[ctrl_target]
+        if len(ctrl_target) == 1 and "a" <= ctrl_target <= "z":
+            return chr(ord(ctrl_target) & 0x1F)
+        raise KeySpecError(
+            f"Unsupported Ctrl combination: {spec!r}. "
+            f"Use C-<letter>, or one of C-@ C-space C-[ C-\\ C-] C-^ C-_ C-?"
+        )
+
+    # A bare printable character is its own keystroke ("y" at a [y/N] prompt).
+    if len(raw) == 1 and raw.isprintable():
+        return raw
+
+    raise KeySpecError(
+        f"Unrecognised key specification: {spec!r}. "
+        f"Expected a named key ({', '.join(sorted(set(_NAMED_KEYS)))}), "
+        f"a Ctrl combination such as 'C-t', a byte such as '0x14', "
+        f"a single character, or 'none'."
+    )
+
+
+def describe_key_bytes(data: bytes) -> str:
+    """
+    Human-readable label for bytes read from a terminal, for `--keys` output.
+
+    Returns a spec that round-trips through parse_key_spec where one exists,
+    otherwise a hex dump.
+    """
+    if len(data) == 1:
+        b = data[0]
+        if b == 0x00:
+            return "C-space"
+        if b == 0x1B:
+            return "Escape"
+        if b == 0x09:
+            return "Tab"
+        if b == 0x0D:
+            return "Enter"
+        if b == 0x7F:
+            return "Backspace"
+        if b < 0x20:
+            for name, ch in _CTRL_PUNCTUATION.items():
+                if ch == chr(b) and len(name) == 1:
+                    return f"C-{name}"
+            return f"C-{chr(b + 0x60)}"
+        if 0x20 <= b < 0x7F:
+            return repr(chr(b))
+    return " ".join(f"0x{b:02x}" for b in data)
 
 
 class KeystrokeGenerator:

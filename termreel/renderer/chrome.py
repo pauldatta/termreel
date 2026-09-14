@@ -3,7 +3,7 @@ Terminal window frame chrome, macOS traffic lights, titlebar, and status bar ren
 """
 
 import math
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import cairo
 from termreel.renderer.themes import Theme
 from termreel.renderer.cards import draw_rounded_rect
@@ -63,8 +63,15 @@ class ChromeRenderer:
         subtitle: str,
         status_text: str = "● LIVE TTY",
         corner_radius: float = 10.0,
+        status_color: Optional[Tuple[float, float, float]] = None,
     ):
-        """Draw top titlebar with macOS buttons, title text, and status badge."""
+        """
+        Draw top titlebar with macOS buttons, title text, and status badge.
+
+        ``status_color`` overrides the badge color; it defaults to the theme
+        accent. Callers use it to distinguish recording states (themes ship
+        ``traffic_close`` red and ``traffic_minimize`` amber for exactly this).
+        """
         r = corner_radius
         ctx.save()
 
@@ -113,7 +120,7 @@ class ChromeRenderer:
         if status_text:
             ctx.select_font_face(self.font_family, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
             ctx.set_font_size(11.0)
-            ctx.set_source_rgb(*theme.accent_color)
+            ctx.set_source_rgb(*(status_color if status_color is not None else theme.accent_color))
             extents = ctx.text_extents(status_text)
             ctx.move_to(win_x + win_w - extents.width - 24.0, win_y + (titlebar_h / 2.0) + 4.0)
             ctx.show_text(status_text)

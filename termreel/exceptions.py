@@ -54,6 +54,17 @@ class ProcessExecutionError(SupervisorError):
     pass
 
 
+class KeySpecError(TermReelError, ValueError):
+    """
+    Raised when a key specification cannot be parsed.
+
+    Failing loudly matters here: the previous lookup-table fallback returned
+    the spec string itself, so an unrecognised `C-t` was typed into the
+    recorded shell as the literal characters "C-t".
+    """
+    pass
+
+
 class TranscoderError(TermReelError):
     """Raised when FFmpeg video encoding or GIF transcoding fails."""
     pass

@@ -1,6 +1,6 @@
 ---
 name: termreel
-description: Automate, record, and synthesize high-fidelity terminal videos (MP4/WebM/GIF) and Asciinema (.cast) logs from interactive CLIs, TUIs, and AI coding agents (such as agy, git, gcloud, gh) using pseudo-terminals (PTY/tmux), natural typing simulation, reactive triggers, and vector rendering. Use when creating CLI walkthroughs, recording TUI demos, capturing interactive AI agent sessions, handling long-running multi-step workflows, or generating deterministic video proof artifacts.
+description: Automate, record, and synthesize high-fidelity terminal videos (MP4/WebM/GIF) and Asciinema (.cast) logs from interactive CLIs, TUIs, and AI coding agents (such as agy, git, gcloud, gh) using pseudo-terminals (PTY/tmux), natural typing simulation, reactive triggers, and vector rendering. Also supports hand-driven live capture (`termreel live`) where a human types and TermReel records, with hotkey pause/resume that cuts paused time out of the video. Use when creating CLI walkthroughs, recording TUI demos, capturing interactive AI agent sessions, handling long-running multi-step workflows, or generating deterministic video proof artifacts.
 ---
 
 # TermReel: Universal Terminal Recording & Video Synthesis Engine
@@ -139,12 +139,38 @@ Dynamically update it during execution with `set_statusbar`:
 ```
 
 ### 5. Always Redact Secrets and Tokens
-Built-in redactors automatically mask Google API keys, OAuth tokens (`ya29...`), and GitHub PATs (`ghp_...`). Add custom domain or IP regexes under `redactions`:
+
+Built-in redactors automatically mask Google API keys, OAuth tokens (`ya29...`), GitHub PATs (`ghp_...`), AWS keys (`AKIA...`), and JWTs. Add your own entries under the top-level `redactions` key:
+
 ```yaml
 redactions:
   - "internal-host-[0-9]+\\.example\\.corp"
   - "SECRET_KEY=[a-zA-Z0-9]+"
 ```
+
+**To mask a known literal value, just list the value itself.** Entries are compiled as regexes, and a plain string is a valid regex that matches itself:
+
+```yaml
+redactions:
+  - "my-gcp-project-2026"     # exact value — masked wherever it appears
+  - "alice@example.com"
+```
+
+Escape regex metacharacters (`. + * ? ( ) [ ] { } | ^ $ \`) if the value contains them. Hyphens and digits are safe unescaped.
+
+> [!IMPORTANT]
+> **Identifier-shaped secrets cannot be caught by pattern matching.** GCP project IDs, usernames, hostnames, and internal service names are just kebab-case words — any regex broad enough to match `my-gcp-project-2026` will also destroy `us-central1-a` and `docs-site-config`. There is no shape to detect. You **must** list these as literal values; the default patterns will never find them.
+
+> [!NOTE]
+> **`cast_output` is redacted with the same patterns as the video.** Cast payloads pass through the redactor before being written, so a pattern that masks the rendered grid masks the `.cast` too. This does not rescue you from the previous point: a literal value you never listed is not masked in either place.
+
+Verify before publishing. Redaction that silently fails to match looks identical to redaction that worked:
+
+```bash
+termreel peek --raw          # inspect the live grid mid-recording
+grep -iE "ya29|AIza|ghp_|<your-project-id>" output/*.cast
+```
+
 
 ---
 
@@ -307,7 +333,83 @@ termreel peek --raw
 
 ---
 
-## 7. Field Ergonomics & Timeline Primitives
+## 7. Hand-Driven Capture (`termreel live`)
+
+`termreel record` replays a scripted manifest. `termreel live` inverts that: a human drives the terminal and TermReel encodes what happens. Reach for it when the session cannot be scripted, such as exploratory debugging, an unpredictable TUI, or a walkthrough the operator wants to narrate by hand.
+
+```bash
+# Record the default shell to output/live.mp4
+termreel live
+
+# Record a specific command at 1080p, with an Asciinema log
+termreel live "agy" -o output/session.mp4 --resolution 1920x1080 --cast output/session.cast
+```
+
+### Hotkeys
+
+Every control is a prefix keystroke followed by one key, the same shape as tmux. The default prefix is `C-t`, shown in banners as `^T`.
+
+| Keys | Effect |
+| :--- | :--- |
+| `^T p` or `^T Space` | Pause / resume recording |
+| `^T r` | Resume |
+| `^T m` | Mark the current position (reported when the run finishes) |
+| `^T q` | Stop and finalise the video |
+| `^T ?` | Print the hotkey reminder |
+| `^T ^T` | Send one literal prefix byte to the shell |
+
+Everything else is forwarded to the child verbatim. Bracketed pastes suppress the state machine entirely, so pasted text containing `^T` cannot fire a control.
+
+### Pausing Cuts Time Out of the Video
+
+Pausing stops the **recording**, not the process. The child keeps running and still accepts input, but TermReel writes zero frames, so the paused interval never reaches the video. Use it to run `gcloud auth login`, fix a typo, or wait out a slow build without dead air in the output.
+
+On resume the last pre-pause frame crossfades into the first post-resume frame over 0.25s. That fade is the only cut indicator, because a `PAUSED` caption is structurally impossible in a file that contains no paused frames. Use `--hard-cuts` for a straight jump or `--crossfade 0.5` for a slower one.
+
+Output duration equals recorded time, not wall time.
+
+### Rebinding the Prefix
+
+```
+--prefix  ->  $TERMREEL_PREFIX  ->  ~/.termreel/config.yaml  ->  C-t
+```
+
+```yaml
+# ~/.termreel/config.yaml
+live:
+  prefix: "C-a"
+```
+
+Accepted spellings: `C-t`, `ctrl+t`, `ctrl-t`, `^T`, `C-]`, `0x14`.
+
+`C-c`, `C-d`, `C-s`, `C-q`, `C-z`, `C-\`, `Escape` (`C-[`), Enter and newline are refused with an explanation. The recorded shell needs those, and `C-s` freezes the terminal with no way back.
+
+> [!IMPORTANT]
+> On macOS the usable key pool is small. Command never reaches the terminal, Option produces accented characters unless "Use Option as Meta" is enabled, and the shell already owns most of Control. Single-letter Ctrl combinations are the only class that transmits identically across every Mac keyboard layout, which is why the default is one and why rebinding is first-class.
+
+Probe the operator's actual keyboard before recommending a binding:
+
+```bash
+termreel live --keys
+#   -> 0x14         C-t          OK  safe. Suggested config: prefix: "C-t"
+#   -> 0x01         C-a          !!  readline beginning-of-line; also the tmux prefix on many setups
+```
+
+### Driving a Live Session from Another Terminal
+
+A live run registers with the telemetry socket like any other session, so `termreel peek` and `termreel peek -f` work against it. The socket also accepts `PAUSE`, `RESUME`, `TOGGLE_PAUSE` and `STOP`. That is the escape hatch when a full-screen TUI has already claimed the prefix key.
+
+### Constraints
+
+- Requires an interactive tty on stdin. It exits with an error under a pipe or in CI.
+- The canvas is locked at startup, but the recorded shell follows the window: a mid-session resize is passed through to the child, clamped to the locked grid. Shrinking letterboxes; growing past it warns once and the extra area is not captured.
+- Prefer `.mp4`. A `.gif` target buffers the whole stream through a palette filtergraph, so nothing lands on disk until the run stops.
+- Above roughly 1920x1080 the renderer warns: frame production alone eats a large share of the frame budget and the encoder may push back. Pick a smaller grid with `--cols` / `--rows`.
+- `^T q` is the ordinary way out, since raw mode leaves TermReel without its own Ctrl-C. `SIGTERM` / `SIGHUP` also stop it cleanly — video finalised, `.cast` flushed, recorded shell terminated, terminal restored. A second signal force-exits. Background jobs started inside the recorded shell keep running, exactly as they do after a normal stop.
+
+---
+
+## 8. Field Ergonomics & Timeline Primitives
 
 1. **Structured `send_key`**:
    Use dictionaries when you need precise pauses around control keys:
@@ -339,7 +441,7 @@ termreel peek --raw
 
 ---
 
-## 8. Parallel Test Execution
+## 9. Parallel Test Execution
 
 Run the complete test suite concurrently:
 ```bash

@@ -32,11 +32,16 @@ class TelemetryServer:
         metadata: Optional[SessionMetadata] = None,
         registry: Optional[SessionRegistry] = None,
         session_dir: Optional[str] = None,
+        controller: Optional[Any] = None,
     ):
         self.session_id = session_id
         self.state = state
         self.renderer = renderer
         self.registry = registry if registry is not None else SessionRegistry()
+
+        # Optional recording controller exposing pause/resume/toggle_pause/stop.
+        # Present for live recordings, absent for scripted scenario runs.
+        self.controller = controller
 
         if metadata is not None:
             self.metadata = metadata
@@ -335,6 +340,53 @@ class TelemetryServer:
                 }
 
             resp = {"jsonrpc": "2.0", "result": res, "id": req_id}
+            client_sock.sendall((json.dumps(resp) + "\n").encode("utf-8"))
+            return True
+
+        elif method in ("PAUSE", "RESUME", "TOGGLE_PAUSE", "STOP"):
+            controller = self.controller
+            if controller is None:
+                resp = {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32001,
+                        "message": f"Session '{self.session_id}' is not a controllable recording",
+                    },
+                    "id": req_id,
+                }
+                client_sock.sendall((json.dumps(resp) + "\n").encode("utf-8"))
+                return True
+
+            handler_name = {
+                "PAUSE": "pause",
+                "RESUME": "resume",
+                "TOGGLE_PAUSE": "toggle_pause",
+                "STOP": "stop",
+            }[method]
+            handler = getattr(controller, handler_name, None)
+            if not callable(handler):
+                resp = {
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32601, "message": f"Controller cannot '{handler_name}'"},
+                    "id": req_id,
+                }
+                client_sock.sendall((json.dumps(resp) + "\n").encode("utf-8"))
+                return True
+
+            try:
+                handler()
+                res = {
+                    "status": "ok",
+                    "action": handler_name,
+                    "paused": bool(getattr(controller, "paused", False)),
+                }
+                resp = {"jsonrpc": "2.0", "result": res, "id": req_id}
+            except Exception as exc:
+                resp = {
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32000, "message": f"{type(exc).__name__}: {exc}"},
+                    "id": req_id,
+                }
             client_sock.sendall((json.dumps(resp) + "\n").encode("utf-8"))
             return True
 

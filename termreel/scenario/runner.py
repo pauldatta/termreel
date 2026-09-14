@@ -161,6 +161,7 @@ class ScenarioRunner:
         )
         self.telemetry_server: Optional[TelemetryServer] = None
         self.telemetry: Optional[TelemetryServer] = None
+        self.telemetry_renderer: Optional[CairoTerminalRenderer] = None
 
         self._init_triggers()
 
@@ -339,6 +340,23 @@ class ScenarioRunner:
                 except Exception:
                     pass
 
+    def _on_pty_output(self, chunk: bytes) -> None:
+        """
+        Mirror hook invoked by PtySupervisor's reader thread for every chunk
+        read off the PTY master.
+
+        The tmux backend can be polled with capture-pane, but the PTY master is
+        a single-consumer stream, so this is the only place the raw child bytes
+        are observable. Keep it cheap: it runs on the reader thread and blocking
+        here stalls ANSI parsing.
+        """
+        rec = self.asciicast
+        if rec is not None:
+            try:
+                rec.record_output_bytes(chunk)
+            except Exception:
+                pass
+
     def _capture_loop(self):
         """Continuous frame rasterization and video streaming loop."""
         frame_interval = 1.0 / float(self.fps)
@@ -356,7 +374,11 @@ class ScenarioRunner:
                                 self.asciicast.record_output(raw_ansi)
                                 self._last_captured_ansi = raw_ansi
                     else:
-                        pass  # PtySupervisor updates state in real-time
+                        # PtySupervisor was constructed with state=self.state,
+                        # so its single reader thread has already parsed the
+                        # child's bytes into the grid this loop renders, and
+                        # fed the cast via _on_pty_output. Nothing to poll.
+                        pass
 
                     # Evaluate reactive screen triggers asynchronously without blocking frame capture
                     self.monitor.evaluate_and_react(self.supervisor, async_action=True)
@@ -422,11 +444,23 @@ class ScenarioRunner:
         try:
             self._setup_environment()
 
-            # Initialize and start TelemetryServer
+            # Initialize and start TelemetryServer.
+            # It gets its own renderer: CairoTerminalRenderer reuses exactly one
+            # ImageSurface, and a `peek --image` capture drawing onto the frame
+            # thread's renderer would tear one or both images.
+            self.telemetry_renderer = CairoTerminalRenderer(
+                width=self.width,
+                height=self.height,
+                title=self.manifest.metadata.title,
+                subtitle=self.manifest.metadata.subtitle,
+                theme=self.manifest.metadata.theme,
+                font_family=self.manifest.metadata.font,
+                font_size=self.manifest.metadata.font_size,
+            )
             self.telemetry_server = TelemetryServer(
                 session_id=self.session_id,
                 state=self.state,
-                renderer=self.renderer,
+                renderer=self.telemetry_renderer,
                 metadata=self.telemetry_metadata,
                 registry=self.telemetry_registry,
             )
@@ -455,6 +489,7 @@ class ScenarioRunner:
                     width=self.renderer.cols,
                     height=self.renderer.rows,
                     title=self.manifest.metadata.title,
+                    redactor=self.redactor,
                 )
                 self.asciicast.start()
                 self._log(f"Started Asciicast logging -> {cast_path}")
@@ -694,6 +729,12 @@ class ScenarioRunner:
                 rows=self.renderer.rows,
                 cols=self.renderer.cols,
                 env=env_vars,
+                # The PTY backend has no capture-pane equivalent: it must parse
+                # into the same TerminalState the renderer draws from, or every
+                # rendered frame is an empty grid.
+                state=self.state,
+                parser=self.parser,
+                on_output=self._on_pty_output,
             )
 
             self.supervisor.start()

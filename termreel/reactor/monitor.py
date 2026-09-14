@@ -3,9 +3,11 @@ Screen state monitor, event reactor, idle detector, and verification assertions.
 """
 
 import re
+import sys
 import threading
 import time
 from typing import List, Optional, Pattern, Union, Callable
+from termreel.exceptions import KeySpecError
 from termreel.reactor.triggers import Trigger, TriggerAction, ActionType
 from termreel.supervisor.base import BaseSupervisor
 
@@ -111,46 +113,62 @@ class ScreenMonitor:
 
             actions_list = action if isinstance(action, list) else [action]
             for act in actions_list:
-                if isinstance(act, str):
-                    sup.send_key(act)
-                elif isinstance(act, TriggerAction):
-                    if act.delay_before > 0:
-                        time.sleep(act.delay_before)
+                try:
+                    self._execute_single_action(act, sup)
+                except KeySpecError as exc:
+                    # Unrecognised key specifications raise now rather than
+                    # being typed into the session as literal text. On this
+                    # daemon thread that would otherwise be an unhandled
+                    # traceback that also swallows every action queued behind
+                    # it, so report it and carry on.
+                    sys.stderr.write(
+                        f"[termreel] Trigger action skipped: {exc} "
+                        f"(use type: type_text to send literal text)\n"
+                    )
+                    sys.stderr.flush()
 
-                    if act.action_type == ActionType.SEND_KEY:
-                        sup.send_key(str(act.value))
-                    elif act.action_type == ActionType.TYPE_TEXT:
-                        sup.send_text(str(act.value))
-                    elif act.action_type == ActionType.PAUSE:
-                        time.sleep(float(act.value or 0.5))
-                    elif act.action_type == ActionType.SELECT_CHOICE:
-                        choice_val = act.value
-                        if isinstance(choice_val, int) or (isinstance(choice_val, str) and choice_val.isdigit()):
-                            choice_num = int(choice_val)
-                            steps = max(0, choice_num - 1)
-                            for _ in range(steps):
-                                sup.send_key("Down")
-                                time.sleep(0.15)
-                            time.sleep(0.1)
-                            sup.send_key("Enter")
-                        elif isinstance(choice_val, dict):
-                            steps = int(choice_val.get("steps", 0))
-                            direction = choice_val.get("direction", "Down")
-                            confirm = choice_val.get("confirm", True)
-                            confirm_key = choice_val.get("confirm_key", "Enter")
-                            for _ in range(steps):
-                                sup.send_key(direction)
-                                time.sleep(0.15)
-                            if confirm:
-                                time.sleep(0.1)
-                                sup.send_key(confirm_key)
-                        else:
-                            sup.send_key("Enter")
-                    elif act.action_type == ActionType.CALLBACK and callable(act.value):
-                        act.value(sup)
+    def _execute_single_action(self, act, sup: BaseSupervisor):
+        """Run one resolved trigger action against the supervisor."""
+        if isinstance(act, str):
+            sup.send_key(act)
+        elif isinstance(act, TriggerAction):
+            if act.delay_before > 0:
+                time.sleep(act.delay_before)
 
-                    if act.delay_after > 0:
-                        time.sleep(act.delay_after)
+            if act.action_type == ActionType.SEND_KEY:
+                sup.send_key(str(act.value))
+            elif act.action_type == ActionType.TYPE_TEXT:
+                sup.send_text(str(act.value))
+            elif act.action_type == ActionType.PAUSE:
+                time.sleep(float(act.value or 0.5))
+            elif act.action_type == ActionType.SELECT_CHOICE:
+                choice_val = act.value
+                if isinstance(choice_val, int) or (isinstance(choice_val, str) and choice_val.isdigit()):
+                    choice_num = int(choice_val)
+                    steps = max(0, choice_num - 1)
+                    for _ in range(steps):
+                        sup.send_key("Down")
+                        time.sleep(0.15)
+                    time.sleep(0.1)
+                    sup.send_key("Enter")
+                elif isinstance(choice_val, dict):
+                    steps = int(choice_val.get("steps", 0))
+                    direction = choice_val.get("direction", "Down")
+                    confirm = choice_val.get("confirm", True)
+                    confirm_key = choice_val.get("confirm_key", "Enter")
+                    for _ in range(steps):
+                        sup.send_key(direction)
+                        time.sleep(0.15)
+                    if confirm:
+                        time.sleep(0.1)
+                        sup.send_key(confirm_key)
+                else:
+                    sup.send_key("Enter")
+            elif act.action_type == ActionType.CALLBACK and callable(act.value):
+                act.value(sup)
+
+            if act.delay_after > 0:
+                time.sleep(act.delay_after)
 
     def wait_for_text(
         self,

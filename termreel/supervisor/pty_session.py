@@ -12,7 +12,7 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Optional, Dict, Union, Any, Pattern
+from typing import Optional, Dict, Union, Any, Pattern, Callable
 from termreel.supervisor.base import BaseSupervisor
 from termreel.emulator.state import TerminalState
 from termreel.emulator.parser import ANSIParser
@@ -49,6 +49,35 @@ KEY_SEQUENCES = {
 }
 
 
+def _pty_child_preexec() -> None:
+    """
+    Post-fork, pre-exec setup for the PTY child.
+
+    Runs after subprocess has already dup2'd the slave PTY onto fds 0/1/2, so
+    fd 0 is the slave terminal here.
+
+    1. ``setsid()`` detaches from the parent's session and makes the child a
+       session leader with no controlling terminal.
+    2. ``TIOCSCTTY`` then explicitly claims the slave PTY as the controlling
+       terminal. Linux hands a ctty to a session leader that opens a tty, so
+       this looked unnecessary there; BSD and macOS do not, and without it the
+       child reports "no job control in this shell" and Ctrl-C / Ctrl-Z / fg /
+       bg all misbehave.
+    """
+    os.setsid()
+    tiocsctty = getattr(termios, "TIOCSCTTY", None)
+    if tiocsctty is None:
+        return
+    try:
+        fcntl.ioctl(0, tiocsctty, 0)
+    except OSError:
+        # EPERM means some other session already owns this terminal; ENOTTY
+        # means fd 0 is not a tty (a caller redirected stdin). Neither is
+        # worth aborting the launch over -- the shell fallback that made this
+        # work on Linux before is still in play.
+        pass
+
+
 class PtySupervisor(BaseSupervisor):
     """
     Direct POSIX PTY supervisor using openpty.
@@ -62,6 +91,9 @@ class PtySupervisor(BaseSupervisor):
         rows: int = 30,
         cols: int = 100,
         env: Optional[Dict[str, str]] = None,
+        state: Optional[TerminalState] = None,
+        parser: Optional[ANSIParser] = None,
+        on_output: Optional[Callable[[bytes], None]] = None,
     ):
         self.command = command
         self.cwd = os.path.abspath(cwd) if cwd else os.getcwd()
@@ -73,8 +105,21 @@ class PtySupervisor(BaseSupervisor):
         self.slave_fd: Optional[int] = None
         self.process: Optional[subprocess.Popen] = None
 
-        self.state = TerminalState(rows=rows, cols=cols)
-        self.parser = ANSIParser(self.state)
+        # A caller (e.g. ScenarioRunner or LiveRecorder) may inject the very
+        # TerminalState the renderer draws from, so that the single PTY reader
+        # feeds the frame pipeline directly instead of a private shadow grid.
+        if parser is not None:
+            self.parser = parser
+            self.state = state if state is not None else parser.state
+        else:
+            self.state = state if state is not None else TerminalState(rows=rows, cols=cols)
+            self.parser = ANSIParser(self.state)
+
+        # Mirror hook for raw master-fd bytes. The PTY master is a
+        # single-consumer stream, so anything that needs to see the child's
+        # output (a live passthrough tty, an asciicast log) must hook here
+        # rather than spawning a second os.read() loop.
+        self.on_output: Optional[Callable[[bytes], None]] = on_output
 
         self._running = False
         self._reader_thread: Optional[threading.Thread] = None
@@ -112,7 +157,7 @@ class PtySupervisor(BaseSupervisor):
                 stderr=self.slave_fd,
                 cwd=self.cwd,
                 env=merged_env,
-                preexec_fn=os.setsid,
+                preexec_fn=_pty_child_preexec,
                 close_fds=True,
             )
         except Exception:
@@ -144,7 +189,14 @@ class PtySupervisor(BaseSupervisor):
 
 
     def _reader_loop(self):
-        """Asynchronously reads data from master PTY fd and feeds the ANSI parser."""
+        """
+        Sole consumer of the PTY master fd.
+
+        A pty master is a single-consumer stream: whichever reader calls
+        os.read() first gets the bytes and no one else ever sees them. So any
+        other component that needs the child's output registers ``on_output``
+        instead of opening a competing read loop.
+        """
         while self._running and self.master_fd is not None:
             try:
                 r, _, _ = select.select([self.master_fd], [], [], 0.05)
@@ -152,6 +204,15 @@ class PtySupervisor(BaseSupervisor):
                     chunk = os.read(self.master_fd, 8192)
                     if not chunk:
                         break
+                    # Mirror first and deliberately outside self._lock: the
+                    # hook typically writes to the operator's real tty, which
+                    # can block on flow control, and must not hold up parsing.
+                    hook = self.on_output
+                    if hook is not None:
+                        try:
+                            hook(chunk)
+                        except Exception:
+                            pass
                     with self._lock:
                         self._raw_output_buffer.extend(chunk)
                         self.parser.feed(chunk)
@@ -235,7 +296,16 @@ class PtySupervisor(BaseSupervisor):
         return self.process.poll() is None
 
     def terminate(self) -> None:
-        """Clean up child process and close PTY descriptors."""
+        """
+        Clean up child process and close PTY descriptors.
+
+        Note: a background job started inside the recorded shell (``sleep 600 &``)
+        is *not* reaped. Now that the child owns a controlling terminal it has
+        job control, so each job lives in its own process group and killpg on
+        the shell's group does not reach it. Measured against bash 5.3: SIGHUP
+        to the session, closing the master first, and both together all leave
+        the job running, so there is no cheap remedy here.
+        """
         self._running = False
         if self.process and self.process.poll() is None:
             try:
