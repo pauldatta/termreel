@@ -147,7 +147,8 @@ class LiveRecorder:
         cwd: Optional[str] = None,
         preset: str = "veryfast",
         crf: int = 20,
-        redactions: Optional[List[str]] = None,
+        redactions: Optional[Any] = None,
+        mask: Optional[Any] = None,
         verbose: bool = True,
         stdin_fd: Optional[int] = None,
         stdout_fd: Optional[int] = None,
@@ -202,7 +203,7 @@ class LiveRecorder:
             palette=self.renderer.theme.palette,
         )
         self.parser = ANSIParser(self.state)
-        self.redactor = Redactor(custom_patterns=redactions)
+        self.redactor = Redactor.create(mask=mask, redactions=redactions, load_global=True)
 
         self.supervisor: Optional[PtySupervisor] = None
         self.pipe: Optional[FFmpegPipe] = None

@@ -1,27 +1,25 @@
 """
-Sensitive token, API key, and secret redaction manager.
-Delegates to the enhanced MaskEngine for pattern, value, and anchor masking.
+TermReel Screen Masking and Secret Redaction Engine.
 """
 
-from typing import List, Pattern
 from termreel.mask.engine import (
-    DEFAULT_SECRET_PATTERNS,
     MaskEngine,
     Redactor,
     ValueRule,
     PatternRule,
     AnchorRule,
+    DEFAULT_SECRET_PATTERNS,
     load_mask_config,
     get_global_config_path,
 )
 
 __all__ = [
-    "DEFAULT_SECRET_PATTERNS",
     "MaskEngine",
     "Redactor",
     "ValueRule",
     "PatternRule",
     "AnchorRule",
+    "DEFAULT_SECRET_PATTERNS",
     "load_mask_config",
     "get_global_config_path",
 ]

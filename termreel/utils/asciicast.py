@@ -35,7 +35,13 @@ class AsciicastRecorder:
         # Redaction is applied to the rendered grid elsewhere; without this the
         # .cast stream is a verbatim, unmasked copy of everything the child
         # printed, secrets included.
-        self.redactor = redactor
+        if redactor is None:
+            from termreel.utils.redaction import Redactor
+            self.redactor = Redactor(load_global_config=True)
+        elif redactor is False:
+            self.redactor = None
+        else:
+            self.redactor = redactor
 
         # Elapsed-time source. Defaults to wall clock since start(). A live
         # recording that cuts paused segments out of the video passes its own

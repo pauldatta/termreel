@@ -127,7 +127,8 @@ if PYDANTIC_AVAILABLE:
         version: str = "1.0"
         metadata: ScenarioMetadata = Field(default_factory=ScenarioMetadata)
         environment: ScenarioEnvironment = Field(default_factory=ScenarioEnvironment)
-        redactions: List[str] = Field(default_factory=list)
+        redactions: Union[List[Any], Dict[str, Any]] = Field(default_factory=list)
+        mask: Optional[Union[Dict[str, Any], List[Any]]] = None
         triggers: List[TriggerConfig] = Field(default_factory=list)
         timeline: List[TimelineStep] = Field(default_factory=list)
 
@@ -246,7 +247,8 @@ else:
         version: str = "1.0"
         metadata: ScenarioMetadata = field(default_factory=ScenarioMetadata)
         environment: ScenarioEnvironment = field(default_factory=ScenarioEnvironment)
-        redactions: List[str] = field(default_factory=list)
+        redactions: Union[List[Any], Dict[str, Any]] = field(default_factory=list)
+        mask: Optional[Union[Dict[str, Any], List[Any]]] = None
         triggers: List[TriggerConfig] = field(default_factory=list)
         timeline: List[TimelineStep] = field(default_factory=list)
 
@@ -425,8 +427,12 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
     )
 
     redactions = data.get("redactions", [])
-    if not isinstance(redactions, list):
-        raise ScenarioValidationError(f"Invalid 'redactions': expected list, got {type(redactions).__name__}")
+    if redactions is not None and not isinstance(redactions, (list, dict)):
+        raise ScenarioValidationError(f"Invalid 'redactions': expected list or dict, got {type(redactions).__name__}")
+
+    mask = data.get("mask", None)
+    if mask is not None and not isinstance(mask, (list, dict)):
+        raise ScenarioValidationError(f"Invalid 'mask': expected list or dict, got {type(mask).__name__}")
 
     triggers_data = data.get("triggers", [])
     if not isinstance(triggers_data, list):
@@ -550,7 +556,8 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
         version=str(data.get("version", "1.0")),
         metadata=metadata,
         environment=environment,
-        redactions=redactions,
+        redactions=redactions if redactions is not None else [],
+        mask=mask,
         triggers=triggers,
         timeline=timeline,
     )

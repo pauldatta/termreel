@@ -140,35 +140,83 @@ Dynamically update it during execution with `set_statusbar`:
 
 ### 5. Always Redact Secrets and Tokens
 
-Built-in redactors automatically mask Google API keys, OAuth tokens (`ya29...`), GitHub PATs (`ghp_...`), AWS keys (`AKIA...`), and JWTs. Add your own entries under the top-level `redactions` key:
+Built-in redactors automatically mask Google API keys, OAuth tokens (`ya29...`), GitHub PATs (`ghp_...`), AWS keys (`AKIA...`), and JWTs.
+
+For environment-specific secrets, project identifiers, and hostnames, use **Screen Masking and Value Substitution** under `mask:` or `redactions:`:
+
+#### 1. Realistic Value Substitution
+Mask sensitive values by substituting a realistic fake string rather than blacking them out with `•••`, so recorded code and commands remain copyable and natural:
 
 ```yaml
-redactions:
-  - "internal-host-[0-9]+\\.example\\.corp"
-  - "SECRET_KEY=[a-zA-Z0-9]+"
+mask:
+  values:
+    elevate-security-2026: acme-demo-42
+    internal-prod-cluster.corp: cluster-demo-01
 ```
 
-**To mask a known literal value, just list the value itself.** Entries are compiled as regexes, and a plain string is a valid regex that matches itself:
+Or explicit match/replace objects:
 
 ```yaml
-redactions:
-  - "my-gcp-project-2026"     # exact value — masked wherever it appears
-  - "alice@example.com"
+mask:
+  values:
+    - match: "elevate-security-2026"
+      replace: "acme-demo-42"
 ```
 
-Escape regex metacharacters (`. + * ? ( ) [ ] { } | ^ $ \`) if the value contains them. Hyphens and digits are safe unescaped.
+#### 2. Contextual Landmark Anchors
+When values are dynamic or positional, anchor on surrounding text:
+
+```yaml
+mask:
+  anchors:
+    - after: "project = "
+      replace: "acme-demo-42"
+    - after: "export SECRET_KEY="
+      span: "rest_of_line"
+      replace: "dummy-key-xyz"
+    - after: 'client_id: "'
+      before: '"'
+      replace: "fake-client-id"
+```
+
+#### 3. Custom Regex Patterns
+```yaml
+mask:
+  patterns:
+    - pattern: "ghp_[a-zA-Z0-9]{30,45}"
+      replace: "ghp_mocktoken12345678901234567890"
+    - "internal-host-[0-9]+\\.example\\.corp"  # default bullet mask
+```
+
+#### 4. Global Configuration (`~/.termreel/config.yaml`)
+Define machine-wide mask rules once in `~/.termreel/config.yaml`. TermReel automatically merges global rules into all scenario and live recordings:
+
+```yaml
+# ~/.termreel/config.yaml
+mask:
+  values:
+    my-company-gcp-prod-2026: acme-demo-42
+    alice-internal-ldap: demo-user
+  anchors:
+    - after: "project = "
+      replace: "acme-demo-42"
+```
+
+Scenario-specific rules override global rules on key collision.
 
 > [!IMPORTANT]
-> **Identifier-shaped secrets cannot be caught by pattern matching.** GCP project IDs, usernames, hostnames, and internal service names are just kebab-case words — any regex broad enough to match `my-gcp-project-2026` will also destroy `us-central1-a` and `docs-site-config`. There is no shape to detect. You **must** list these as literal values; the default patterns will never find them.
+> **Identifier-shaped secrets cannot be caught by pattern matching.** GCP project IDs, usernames, hostnames, and internal service names are just kebab-case words — any regex broad enough to match `my-gcp-project-2026` will also destroy `us-central1-a` and `docs-site-config`. You **must** list these under `values` or `anchors`.
 
 > [!NOTE]
-> **`cast_output` is redacted with the same patterns as the video.** Cast payloads pass through the redactor before being written, so a pattern that masks the rendered grid masks the `.cast` too. This does not rescue you from the previous point: a literal value you never listed is not masked in either place.
+> **`.cast` exports are redacted with the same rules as the video.** Asciinema events pass through the MaskEngine before writing, so `.cast` files match the substituted video without secret leaks.
 
-Verify before publishing. Redaction that silently fails to match looks identical to redaction that worked:
+#### 5. Verification & Typo Protection
+Run mask verification before publishing. Typo protection warns when a configured rule has 0 matches, and `--strict` fails CI:
 
 ```bash
-termreel peek --raw          # inspect the live grid mid-recording
-grep -iE "ya29|AIza|ghp_|<your-project-id>" output/*.cast
+termreel mask --verify output/session.cast --strict
+termreel mask --test "gcloud config set project elevate-security-2026"
+termreel mask --list
 ```
 
 

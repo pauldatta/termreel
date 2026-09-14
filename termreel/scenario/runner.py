@@ -108,7 +108,11 @@ class ScenarioRunner:
             palette=self.renderer.theme.palette,
         )
         self.parser = ANSIParser(self.state)
-        self.redactor = Redactor(custom_patterns=self.manifest.redactions)
+        self.redactor = Redactor.create(
+            mask=getattr(self.manifest, "mask", None),
+            redactions=getattr(self.manifest, "redactions", None),
+            load_global=True,
+        )
 
         self.supervisor: Optional[BaseSupervisor] = None
         self.ffmpeg_pipe: Optional[FFmpegPipe] = None

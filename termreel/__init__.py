@@ -26,7 +26,7 @@ from termreel.reactor.monitor import ScreenMonitor
 from termreel.scenario.schema import ScenarioManifest, TimelineStep
 from termreel.scenario.runner import ScenarioRunner, ScenarioReport
 from termreel.utils.keystrokes import KeystrokeGenerator, KeyMap
-from termreel.utils.redaction import Redactor
+from termreel.utils.redaction import Redactor, MaskEngine
 from termreel.utils.asciicast import AsciicastRecorder, AsciicastPlayer
 from termreel.hooks.models import (
     HookEventType,
@@ -82,6 +82,7 @@ __all__ = [
     "KeystrokeGenerator",
     "KeyMap",
     "Redactor",
+    "MaskEngine",
     "AsciicastRecorder",
     "AsciicastPlayer",
     "HookEventType",

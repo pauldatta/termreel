@@ -24,8 +24,7 @@
 | **Batch Orchestrator** | Concurrently render multi-scenario test suites (`termreel batch`) with automatic poster frame sync. | Eliminates custom shell scripts; generates consolidated JSON and Markdown batch reports. |
 | **Multimodal Video Audit** | Automated video evaluation via `gemini-3.1-pro-preview` with 100-point rubric (`termreel audit`). | Visual regression testing against scenario specs with automated CI pass/fail thresholding. |
 | **Live Hand-Driven Capture** | Record your own shell (`termreel live`) with rebindable hotkey pause/resume; paused time is cut from the video and the seam is crossfaded. | Demos that need human judgement mid-take, without post-editing or a manifest. |
-| **Live Peek & Telemetry** | Non-invasive terminal observation (`termreel peek`), live 10 FPS follow mode (`-f`), vector PNG snapshots, and local web dashboard. | Zero-recording-overhead IPC allows developers and agents to monitor running renders in real time. |
-| **Telemetry & Redaction** | Asciinema v2 (`.cast`) capture, PNG poster frame extraction, and automated token masking. | Lightweight audit logging with automated credential and secret masking. |
+| **Masking & Value Substitution** | Realistic fake substitution, contextual anchors, regex redaction, global `~/.termreel/config.yaml`, and verification auditing (`termreel mask`). | Prevents secret and project ID leakage while keeping recorded commands copyable and natural across video and `.cast` streams. |
 
 
 
@@ -133,7 +132,10 @@ termreel cast2video session.cast -o session.mp4 --theme dracula
 # 7. Resume an ongoing session or conversation
 termreel record scenarios/git_demo.yaml --resume
 
-# 8. Run full test suite in parallel
+# 8. Verify secret masking and realistic value substitutions
+termreel mask --verify output/session.cast --strict
+
+# 9. Run full test suite in parallel
 termreel test -w 8
 ```
 

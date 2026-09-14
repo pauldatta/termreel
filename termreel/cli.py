@@ -21,6 +21,7 @@ from termreel.transcoder.ffmpeg_pipe import FFmpegPipe
 from termreel.transcoder.gif_encoder import GifEncoder
 from termreel.generator.explorer import CLIExplorer
 from termreel.generator.scaffold import ScenarioGenerator
+from termreel.mask import MaskEngine
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     c2v_parser.add_argument("--theme", default="catppuccin-mocha", help="Visual theme")
     c2v_parser.add_argument("--title", default="Asciicast Replay", help="Window title")
     c2v_parser.add_argument("--speed", type=float, default=1.0, help="Playback speed multiplier (default: 1.0)")
+    c2v_parser.add_argument("--config", help="Path to global or custom mask configuration YAML")
 
     # 4. validate
     val_parser = subparsers.add_parser("validate", help="Validate a scenario YAML manifest syntax and schema")
@@ -152,6 +154,15 @@ def build_parser() -> argparse.ArgumentParser:
     live_parser.add_argument("--crf", type=int, default=20, help="x264 CRF quality (default: 20)")
     live_parser.add_argument("--keys", action="store_true", help="Report what bytes your terminal sends for each key, then exit")
     live_parser.add_argument("-q", "--quiet", action="store_true", help="Suppress status logging")
+
+    # 14. mask
+    mask_parser = subparsers.add_parser("mask", help="Inspect, test, and verify screen masking and redaction rules")
+    mask_parser.add_argument("--verify", "-v", dest="verify_file", help="Verify mask rules against a recording (.cast), scenario (.yaml), or text file")
+    mask_parser.add_argument("--strict", action="store_true", help="Fail with exit code 1 if any configured mask rule has 0 matches (typo protection)")
+    mask_parser.add_argument("--config", help="Path to mask config file (default: ~/.termreel/config.yaml)")
+    mask_parser.add_argument("--test", help="Test mask rules against an inline text string")
+    mask_parser.add_argument("--list", action="store_true", help="List all active mask rules from global config")
+    mask_parser.add_argument("--json", action="store_true", help="Output verification report in JSON format")
 
     return parser
 
@@ -259,6 +270,7 @@ def cmd_cast2video(args: argparse.Namespace) -> int:
         palette=renderer.theme.palette,
     )
     parser = ANSIParser(state)
+    redactor = MaskEngine.create(load_global=True, config_path=getattr(args, "config", None))
 
     pipe = FFmpegPipe(output_file=args.output, width=1280, height=720, fps=args.fps)
     pipe.open()
@@ -281,6 +293,7 @@ def cmd_cast2video(args: argparse.Namespace) -> int:
                 parser.feed(ev_data)
             event_idx += 1
 
+        redactor.apply_to_terminal_state(state)
         frame_bytes = renderer.draw_frame(
             state,
             status_left=f"{args.title} | {current_sim_time:.1f}s / {player.duration / speed:.1f}s",
@@ -575,6 +588,195 @@ def cmd_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mask(args: argparse.Namespace) -> int:
+    import json
+    from termreel.mask.engine import MaskEngine, get_global_config_path
+
+    config_path = getattr(args, "config", None)
+
+    # 1. List active rules
+    if getattr(args, "list", False):
+        target_cfg = config_path or get_global_config_path()
+        engine = MaskEngine(load_global_config=True, global_config_path=config_path)
+        report = engine.get_verification_report()
+        if getattr(args, "json", False):
+            print(json.dumps(report, indent=2))
+            return 0
+        print(f"📋 TermReel Mask Configuration ({target_cfg})")
+        print(f"Active Rules: {len(report['rules'])} (Default patterns: {sum(1 for r in report['rules'] if r.get('is_default'))})")
+        print("-" * 80)
+        print(f"{'TYPE':<8} {'TARGET':<35} {'REPLACEMENT':<20}")
+        print("-" * 80)
+        for r in report["rules"]:
+            is_def = " (default)" if r.get("is_default") else ""
+            print(f"{r['type']:<8} {r['target'][:33] + is_def:<35} {str(r['replace'])[:18]:<20}")
+        print("-" * 80)
+        return 0
+
+    # 2. Test inline string
+    if getattr(args, "test", None) is not None:
+        test_str = args.test
+        engine = MaskEngine(load_global_config=True, global_config_path=config_path)
+        masked_str = engine.redact_text(test_str)
+        report = engine.get_verification_report()
+        if getattr(args, "json", False):
+            out = {
+                "input": test_str,
+                "output": masked_str,
+                "report": report,
+            }
+            print(json.dumps(out, indent=2))
+            return 0
+        print("🧪 TermReel Mask Rule Test")
+        print(f"Input:  {test_str}")
+        print(f"Output: {masked_str}")
+        print(f"Matches triggered: {report['total_matches']}")
+        for r in report["rules"]:
+            if r["match_count"] > 0:
+                print(f"  - [{r['type']}] {r['target']} -> {r['replace']} ({r['match_count']} match)")
+        return 0
+
+    # 3. Verify file (.cast, .yaml, or text)
+    verify_file = getattr(args, "verify_file", None)
+    if not verify_file:
+        print("Usage: termreel mask --verify <file> [--strict] [--config <config.yaml>]", file=sys.stderr)
+        print("       termreel mask --test \"text to test\"", file=sys.stderr)
+        print("       termreel mask --list", file=sys.stderr)
+        return 0
+
+    if not os.path.exists(verify_file):
+        print(f"❌ Error: Target verification file not found: {verify_file}", file=sys.stderr)
+        return 1
+
+    scenario_rules = None
+    file_text = ""
+
+    if verify_file.endswith(".yaml") or verify_file.endswith(".yml"):
+        try:
+            import yaml
+            with open(verify_file, "r", encoding="utf-8") as f:
+                scen_data = yaml.safe_load(f)
+            if isinstance(scen_data, dict):
+                manifest_mask = scen_data.get("mask")
+                manifest_redact = scen_data.get("redactions")
+                scenario_rules = {}
+                if manifest_redact:
+                    if isinstance(manifest_redact, list):
+                        scenario_rules["patterns"] = list(manifest_redact)
+                    elif isinstance(manifest_redact, dict):
+                        scenario_rules.update(manifest_redact)
+                if manifest_mask:
+                    if isinstance(manifest_mask, dict):
+                        for k, v in manifest_mask.items():
+                            if k == "patterns" and "patterns" in scenario_rules:
+                                v_list = v if isinstance(v, list) else [v]
+                                scenario_rules["patterns"].extend(v_list)
+                            else:
+                                scenario_rules[k] = v
+                    elif isinstance(manifest_mask, list):
+                        if "rules" in scenario_rules:
+                            scenario_rules["rules"].extend(manifest_mask)
+                        else:
+                            scenario_rules["rules"] = manifest_mask
+
+                def _collect_strings(obj) -> List[str]:
+                    collected = []
+                    if isinstance(obj, dict):
+                        for k, v in obj.items():
+                            if k in ("mask", "redactions"):
+                                continue
+                            collected.extend(_collect_strings(v))
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            collected.extend(_collect_strings(item))
+                    elif isinstance(obj, (str, int, float, bool)):
+                        collected.append(str(obj))
+                    return collected
+
+                text_parts = _collect_strings(scen_data)
+                file_text = "\n".join(text_parts)
+        except Exception as e:
+            print(f"❌ Error reading scenario YAML: {e}", file=sys.stderr)
+            return 1
+    elif verify_file.endswith(".cast"):
+        try:
+            with open(verify_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            text_parts = []
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith("{"):
+                    continue
+                try:
+                    ev = json.loads(line)
+                    if isinstance(ev, list) and len(ev) >= 3 and ev[1] in ("o", "i"):
+                        text_parts.append(str(ev[2]))
+                except Exception:
+                    pass
+            file_text = "".join(text_parts)
+        except Exception as e:
+            print(f"❌ Error reading .cast file: {e}", file=sys.stderr)
+            return 1
+    else:
+        try:
+            with open(verify_file, "r", encoding="utf-8", errors="replace") as f:
+                file_text = f.read()
+        except Exception as e:
+            print(f"❌ Error reading file: {e}", file=sys.stderr)
+            return 1
+
+    engine = MaskEngine.create(
+        scenario_rules=scenario_rules,
+        load_global=True,
+        config_path=config_path,
+    )
+
+    engine.redact_text(file_text)
+    report = engine.get_verification_report()
+
+    strict = getattr(args, "strict", False)
+    unmatched_custom = [r for r in report["unmatched"] if not r.get("is_default")]
+    passed = len(unmatched_custom) == 0 if strict else True
+
+    if getattr(args, "json", False):
+        result_json = {
+            "target": verify_file,
+            "status": "pass" if (len(unmatched_custom) == 0) else ("fail" if strict else "warning"),
+            "strict": strict,
+            "total_matches": report["total_matches"],
+            "active_rules_count": report["active_rules_count"],
+            "unmatched_count": len(unmatched_custom),
+            "unmatched_rules": [r["target"] for r in unmatched_custom],
+            "rules": report["rules"],
+        }
+        print(json.dumps(result_json, indent=2))
+        return 0 if passed else 1
+
+    print(f"🔍 TermReel Mask Verification: {verify_file}")
+    print(f"Active Rules: {report['active_rules_count']} | Total Matches: {report['total_matches']}")
+    print("-" * 80)
+    print(f"{'TYPE':<8} {'TARGET':<35} {'REPLACEMENT':<18} {'MATCHES':<8} {'STATUS'}")
+    print("-" * 80)
+    for r in report["rules"]:
+        is_def = " (default)" if r.get("is_default") else ""
+        cnt = r["match_count"]
+        status = "✅ Matched" if cnt > 0 else ("ℹ️  Idle" if r.get("is_default") else "⚠️  0 matches")
+        print(f"{r['type']:<8} {r['target'][:33] + is_def:<35} {str(r['replace'])[:16]:<18} {cnt:<8} {status}")
+    print("-" * 80)
+
+    if unmatched_custom:
+        print(f"⚠️  Warning: {len(unmatched_custom)} custom rule(s) had 0 matches (potential typo or unused rule):")
+        for u in unmatched_custom:
+            print(f"   • [{u['type']}] {u['target']}")
+
+    if strict and unmatched_custom:
+        print(f"❌ Strict verification failed: {len(unmatched_custom)} rule(s) had 0 matches.", file=sys.stderr)
+        return 1
+
+    print("✅ Mask verification complete.")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -609,6 +811,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_peek(args)
     elif args.subcommand == "live":
         return cmd_live(args)
+    elif args.subcommand == "mask":
+        return cmd_mask(args)
 
     return 0
 

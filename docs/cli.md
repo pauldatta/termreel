@@ -13,6 +13,7 @@ TermReel provides a unified command-line tool `termreel` (aliased as `reccli`).
 | `termreel exec` | Record a single command directly to video | `termreel exec "git log" -o log.mp4` |
 | `termreel cast2video` | Convert Asciinema `.cast` file to MP4/GIF | `termreel cast2video log.cast -o replay.mp4` |
 | `termreel validate` | Validate scenario YAML syntax & schema | `termreel validate scenario.yaml` |
+| `termreel mask` | Inspect, test, and verify screen masking & redactions | `termreel mask --verify output.cast --strict` |
 | `termreel probe` | Explore CLI binary metadata and subcommands | `termreel probe agy` |
 | `termreel generate` | Scaffold tailored YAML scenario for a CLI | `termreel generate git -o git.yaml` |
 | `termreel batch` | Concurrently render batches of scenarios | `termreel batch scenarios/*.yaml -c 4` |
@@ -215,4 +216,27 @@ Non-invasively inspects a running render or background recording task in real ti
 - `--web [port]`: Launch a local web dashboard (default: `http://localhost:8989` or `http://pauldatta.c.googlers.com:8989`) with auto-refreshing live terminal view.
 - `--raw`: Output raw plain screen text without HUD borders (ideal for piping or automated checks).
 - `--interval <float>`: Screen polling/refresh interval in seconds (default: 0.1s).
+
+### `termreel mask`
+```bash
+termreel mask [options]
+```
+Inspects, tests, and validates screen masking, secret redaction, and realistic value substitution rules against recordings (`.cast`), scenario YAML manifests, or plain text logs.
+
+- `--verify, -v <file>`: Verify configured mask rules against a target recording (`.cast`), scenario (`.yaml`), or log file. Reports match counts per rule and warns on 0 matches (typo protection).
+- `--strict`: Fails with exit code 1 if any configured custom mask rule has 0 matches.
+- `--config <path>`: Override path to global configuration file (default: `~/.termreel/config.yaml`).
+- `--test <string>`: Test mask rules against an inline text string and display substitutions.
+- `--list`: List all active masking rules loaded from global configuration.
+- `--json`: Output verification reports or rule telemetry in JSON format.
+
+```bash
+# Verify all secrets in a .cast file were masked, with typo protection
+termreel mask --verify output/session.cast --strict
+
+# Test value substitution interactively
+termreel mask --test "gcloud config set project elevate-security-2026"
+# Output: gcloud config set project acme-demo-42
+```
+
 
