@@ -6,7 +6,7 @@ simulates natural keystrokes, reacts to live screen events, and streams
 pixel-perfect H.264 MP4, WebM, and GIF videos.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "Paul Datta"
 __email__ = "pkdatta2000@gmail.com"
 
