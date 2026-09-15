@@ -20,7 +20,7 @@ except ImportError:
 
 if PYDANTIC_AVAILABLE:
     class SchemaBase(BaseModel):
-        model_config = ConfigDict(extra="ignore", populate_by_name=True, arbitrary_types_allowed=True)
+        model_config = ConfigDict(extra="allow", populate_by_name=True, arbitrary_types_allowed=True)
 
     class ScenarioMetadata(SchemaBase):
         title: str = "TermReel Workshop"
@@ -131,6 +131,7 @@ if PYDANTIC_AVAILABLE:
         mask: Optional[Union[Dict[str, Any], List[Any]]] = None
         triggers: List[TriggerConfig] = Field(default_factory=list)
         timeline: List[TimelineStep] = Field(default_factory=list)
+        source_file: Optional[str] = None
 
 else:
     @dataclass
@@ -251,6 +252,7 @@ else:
         mask: Optional[Union[Dict[str, Any], List[Any]]] = None
         triggers: List[TriggerConfig] = field(default_factory=list)
         timeline: List[TimelineStep] = field(default_factory=list)
+        source_file: Optional[str] = None
 
 
 VALID_ACTIONS = {
