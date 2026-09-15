@@ -109,10 +109,36 @@ termreel exec "git status" -o output/status.mp4 --theme nord
 termreel cast2video session.cast -o output/session.mp4 --theme catppuccin-mocha --speed 2.0
 ```
 
+## 5. Live Capture, Peek & Screen Masking
+
+### Hand-Driven Live Capture
+Record your own shell interactions directly with hotkey pause/resume (`^T p` pauses, `^T q` stops):
+```bash
+termreel live -o output/live_session.mp4 --theme tokyo-night
+```
+
+### Non-Invasive Live Peek
+Follow a running recording session or view its terminal output in real time without dropping frames:
+```bash
+# Follow live at 10 FPS in terminal
+termreel peek -f
+
+# Or open browser dashboard at http://pauldatta.c.googlers.com:8989
+termreel peek --web 8989
+```
+
+### Screen Masking & Secret Verification
+Substitute realistic fake values for sensitive project IDs, API keys, or usernames:
+```bash
+# Verify all configured mask rules against output video or cast
+termreel mask --verify output/live_session.cast --strict
+```
+
 ---
 
-## 5. Next Steps
+## 6. Next Steps
 
-- Explore [Scenario Manifest Specifications](scenarios.md) for custom chapter cards and delays.
+- Explore [Scenario Manifest Specifications](scenarios.md) for custom chapter cards, speedup, and editing primitives.
 - Learn how to [Record Interactive AI Agents](interactive-agents.md) with modal trust and `[y/N]` prompt handling.
+- Review the [CLI Reference](cli.md) for all 14 subcommands and flags.
 - Browse [Example Scenarios](examples/antigravity.md) for full reference YAMLs.

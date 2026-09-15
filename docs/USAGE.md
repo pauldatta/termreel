@@ -73,8 +73,55 @@ Transcodes an asciicast `.cast` log into an MP4 or GIF video.
 | `--theme` | `catppuccin-mocha` | Visual theme. |
 | `--speed` | `1.0` | Playback speed multiplier (e.g. `1.5` for 1.5x speed). |
 
-### `termreel validate <scenario.yaml>`
-Lints and validates the structure, schema, and timeline steps of a scenario manifest.
+### `termreel live [command]`
+Records an interactive terminal session driven by hand, with hotkey pause/resume and crossfading.
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `command` | `$SHELL` | Shell or CLI command to record (e.g. `bash`, `agy`). |
+| `-o, --output` | `output/live.mp4` | Output video path. |
+| `--fps` | `15` | Frame rate (15 FPS recommended for human typing). |
+| `--theme` | `catppuccin-mocha` | Visual color theme. |
+| `--prefix` | `C-t` | Hotkey prefix key for pause (`^T p`) and stop (`^T q`). |
+| `--crossfade` | `0.25` | Crossfade blend duration across cuts in seconds. |
+| `--cast` | `None` | Also export an Asciinema `.cast` event log. |
+
+### `termreel peek [session_id]`
+Non-invasively inspects running recording sessions via local UNIX socket IPC.
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `session_id` | Latest active | Target session ID, prefix, or PID. |
+| `-f, --follow` | `False` | Live TUI stream (10 FPS) following terminal updates. |
+| `--image` | `None` | Render and export a high-res PNG vector screenshot. |
+| `--web` | `None` | Launch local web dashboard (default port `8989`). |
+| `--raw` | `False` | Dump raw plain screen text without HUD borders. |
+| `--list` | `False` | List all active and recent recording sessions. |
+
+### `termreel mask`
+Inspects, tests, and validates screen masking and realistic value substitutions.
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `--verify, -v` | `None` | Verify mask rules against a `.cast`, `.yaml`, or text file. |
+| `--strict` | `False` | Fail with exit code 1 if any configured rule has 0 matches. |
+| `--test` | `None` | Test mask rules against an inline text string. |
+| `--list` | `False` | List all active masking rules loaded from global config. |
+
+### `termreel probe <command>`
+Analyzes an interactive binary, extracting subcommands, help text, and permission requirements.
+
+### `termreel generate <command>`
+Scaffolds a customized scenario YAML manifest with chapter cards, cadences, and color themes.
+
+### `termreel batch <scenarios...>`
+Concurrently renders multiple scenario manifests in parallel with structured JSON/Markdown reports.
+
+### `termreel audit <video.mp4>`
+Multimodal video quality and specification rubric evaluation powered by Gemini and Vertex AI.
+
+### `termreel test`
+Accelerated parallel test runner with auto-scaling workers, fast mode (`-f`), and filter patterns (`-k`).
 
 ### `termreel themes`
 Lists all built-in color themes with terminal, text, and accent color hex codes.
@@ -167,15 +214,19 @@ timeline:
 | Action | Parameters | Description |
 | :--- | :--- | :--- |
 | `show_card` / `card` | `tag`, `title`, `desc`, `duration` | Renders a styled chapter or announcement card. |
-| `launch` | `command`, `env`, `wait_for_idle`, `timeout` | Launches the interactive CLI process in a PTY. |
-| `type` | `text`, `speed`, `jitter`, `typos`, `send_key`, `pause` | Types text with simulated human typing cadence. |
-| `send_key` / `key` | `key`, `pause` | Sends special key (`Enter`, `Escape`, `C-c`, `Up`, `Down`). |
+| `launch` | `command`, `env`, `wait_for_idle`, `wait_for_prompt`, `timeout` | Launches the interactive CLI process in a PTY/tmux. |
+| `type` | `text`, `speed`, `jitter`, `typos`, `send_key`, `pause`, `collapse_newlines` | Types text with simulated human typing cadence. |
+| `send_key` / `key` | `key`, `delay_before`, `pause_after` | Sends special key (string or structured dict). |
+| `edit_file` / `edit` | `path`, `content`, `editor`, `action`, `syntax`, `pause_after` | Hermetic Vim file editor with clean buffer handling. |
+| `speedup` | `factor`, `indicator`, `min_duration` | Time dilation / timelapse with synced `.cast` clock. |
+| `assert` / `assert_output` | `contains`, `not_contains`, `pattern`, `scope`, `on_fail` | Semantic assertion gate with scrollback inspection. |
+| `split_pane` | `direction`, `size_percent`, `command` | Split tmux window horizontally or vertically. |
+| `inspect_modal` | `open_command`, `open_key`, `wait_for_render`, `display_duration` | Opens, views, and dismisses a TUI modal dialog. |
 | `paste` | `text`, `pause` | Pastes a text block using bracketed paste mode. |
-| `wait_for_idle` | `timeout`, `reading_pause`, `idle_regex`, `busy_regex` | Polls until CLI finishes processing and returns to prompt. |
+| `wait_for_idle` | `timeout`, `reading_pause`, `idle_regex`, `wait_for_prompt` | Polls until CLI finishes processing and returns to prompt. |
 | `wait_for_text` / `wait` | `pattern`, `timeout`, `pause` | Polls until a regex pattern appears on screen. |
 | `pause` / `sleep` | `seconds` | Static duration sleep. |
-| `run_shell` / `exec` | `command`, `speed`, `pause` | Types shell command and executes with Enter. |
-| `assert` | `pattern`, `timeout`, `negate` | Asserts text presence/absence for test validation. |
+| `run_shell` / `exec` | `command`, `speed`, `pause`, `speedup`, `assert_output` | Types shell command and executes with Enter. |
 | `set_statusbar` | `left`, `right`, `pill` | Dynamically updates status bar text and pill. |
 
 ---

@@ -39,6 +39,18 @@ permissions:
   allow_commands: ["python3", "git", "pytest"]
   allow_tools: ["run_command", "write_to_file", "read_file"]
 
+# Optional screen masking & value substitution (merges with ~/.termreel/config.yaml)
+mask:
+  values:
+    - match: "secret-project-prod-99"
+      replace: "acme-demo-42"
+  anchors:
+    - after: "Bearer "
+      replace: "eyJhbGciOi..."
+  patterns:
+    - pattern: "AIza[0-9A-Za-z\\-_]{35}"
+      replace: "AIzaSyFakeKeyDemo0000000000000000"
+
 triggers:
   - on_match: "Do you trust the contents of this project\\?"
     action: "Enter"
@@ -71,12 +83,17 @@ timeline:
 | `launch` | Launch process in PTY/tmux | `command`, `wait_for_idle`, `wait_for_prompt`, `prompt_pattern`, `timeout` |
 | `type` | Natural keystroke cadence | `text`, `speed`, `jitter`, `send_key`, `pause`, `collapse_newlines`, `multiline` |
 | `send_key` | Send control/arrow key (string or dict) | String (`"Escape"`) or Dict (`{key: "Escape", delay_before: 0.5, pause_after: 1.0}`) |
+| `edit_file` / `edit` | Hermetic Vim file editing with clean buffer clearing and exit | `path`, `content`, `editor`, `action`, `syntax`, `pause_after` |
+| `speedup` | Time dilation / timelapse with synced `.cast` clock | `factor`, `indicator`, `min_duration` (or inline on `run_shell`) |
+| `assert` / `assert_output` | Semantic assertion gate with scrollback inspection | `contains`, `not_contains`, `pattern`, `scope`, `on_fail` |
+| `split_pane` | Split tmux window horizontally or vertically | `direction` (`horizontal` / `vertical`), `size_percent`, `command` |
+| `select_pane` | Switch active tmux pane focus | `pane_index` (int) |
+| `close_pane` | Terminate a tmux pane | `pane_index` (int) |
 | `inspect_modal` | Open, inspect, and dismiss TUI popup | `open_command`, `open_key`, `wait_for_render`, `display_duration`, `dismiss_key`, `pause_after` |
 | `paste` | Bracketed paste multiline text | `text`, `pause` |
-| `run_shell` | Types command, presses Enter, waits | `command`, `speed`, `pause` |
+| `run_shell` | Types command, presses Enter, waits | `command`, `speed`, `pause`, `speedup`, `assert_output` |
 | `wait_for_idle` | Non-blocking wait for ready state | `timeout`, `reading_pause`, `idle_pattern`, `wait_for_prompt`, `prompt_pattern` |
 | `wait_for_text` | Wait for text pattern on screen | `pattern`, `timeout` |
-| `assert` | Fail scenario if text pattern missing | `pattern`, `timeout` |
 | `select_choice` | Navigates down and selects menu choice | `choice` (int), `delay` |
 | `set_statusbar` | Dynamically update status bar | `left`, `right` |
 | `pause` | Freeze stream for duration | `duration` (float seconds) |
@@ -136,5 +153,76 @@ Declaratively opens a TUI popup, waits for its content, pauses for reading, and 
     display_duration: 3.0
     dismiss_key: "Escape"
     pause_after: 1.0
+```
+
+### 5. Hermetic Code Editing (`edit_file` / `edit`)
+Spawns Vim in hermetic mode (`vim -u NONE -i NONE -n`), clears existing content cleanly without `E16` range errors on new files, bracketed-pastes the code with syntax highlighting active, and saves/exits cleanly:
+
+```yaml
+- edit_file:
+    path: "app/agent.py"
+    action: "replace"
+    content: |
+      from google.adk import Agent
+
+      root_agent = Agent(
+          name="AuthFixer",
+          description="Audits authentication tokens"
+      )
+    pause_after: 1.0
+```
+
+### 6. Dynamic Video Speedup (`speedup` / `timelapse`)
+Dilation via producer-side frame decimation compresses long commands (evals, model grading, builds) into high-energy timelapse sequences while keeping `.cast` clocks in exact sync:
+
+```yaml
+# Inline step speedup (automatically restored when step finishes)
+- run_shell: "npm run build"
+  speedup:
+    factor: 8.0
+    indicator: "⏩ 8x"
+
+# Or standalone timeline speedup
+- speedup: 4.0
+- run_shell: "pytest -v --run-slow"
+- speedup: 1.0
+```
+
+### 7. Semantic Assertion Gates (`assert_output` / `assert`)
+Immediately verifies terminal output and fails the scenario if unexpected errors occur, preventing wasted render cycles:
+
+```yaml
+# Inline assertion on run_shell
+- run_shell: "python3 app/agent.py"
+  assert_output:
+    contains: "Token generated successfully"
+    not_contains: "Error:"
+    scope: "all"       # Inspect full scrollback buffer
+    on_fail: "abort"   # 'abort' or 'warn'
+
+# Standalone assertion step
+- assert:
+    pattern: "Build successful"
+    timeout: 5.0
+```
+
+### 8. Multi-Pane Tmux Layouts (`split_pane`, `select_pane`, `close_pane`)
+Demonstrates client-server or agent-sidecar workflows side by side under `--backend tmux`:
+
+```yaml
+# Split terminal horizontally (left: agent, right: monitor)
+- split_pane:
+    direction: "horizontal"
+    size_percent: 40
+    command: "tail -f server.log"
+
+- select_pane:
+    pane_index: 0
+
+- run_shell: "curl http://localhost:8080/health"
+  pause: 2.0
+
+- close_pane:
+    pane_index: 1
 ```
 

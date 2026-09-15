@@ -18,6 +18,7 @@ TermReel provides a unified command-line tool `termreel` (aliased as `reccli`).
 | `termreel generate` | Scaffold tailored YAML scenario for a CLI | `termreel generate git -o git.yaml` |
 | `termreel batch` | Concurrently render batches of scenarios | `termreel batch scenarios/*.yaml -c 4` |
 | `termreel audit` | Multimodal video verification with Gemini | `termreel audit demo.mp4 --spec spec.yaml` |
+| `termreel peek` | Non-invasively observe live recording session | `termreel peek -f` |
 | `termreel themes` | List all 9 visual themes and palettes | `termreel themes` |
 | `termreel test` | Run test suite concurrently across async workers | `termreel test -w 8` |
 | `termreel info` | Display environment and dependency status | `termreel info` |

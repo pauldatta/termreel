@@ -28,6 +28,7 @@
 | **Dynamic Video Speedup** | Time dilation via producer-side frame decimation (`speedup` / `timelapse`) with synced `.cast` clock. | Compresses long commands (evals, model grading) into fast-forward sequences with status pill indicator (`⏩ 8x`). |
 | **Hermetic Vim Editor** | First-class `edit_file` action handling vim buffer clearing, bracketed paste, and clean exit. | Displays authentic code creation on screen without manual vim keystroke choreography or indentation staircase. |
 | **Assertion Output Gates** | Direct assertions on `run_shell` (`assert_output`) and standalone `assert:` with scrollback inspection. | Catches broken command state immediately during scenario execution rather than discovering failures post-render. |
+| **Live Peek & Telemetry** | Non-invasive terminal observation (`termreel peek`), live 10 FPS follow mode (`-f`), vector PNG snapshots, and local web dashboard. | Zero-recording-overhead IPC allows developers and agents to monitor running renders in real time. |
 
 
 
@@ -129,17 +130,26 @@ termreel exec "git status" -o output/status.mp4 --theme nord
 # 5. Record your own terminal by hand (^T p pauses, ^T q stops)
 termreel live -o output/demo.mp4 --theme tokyo-night
 
-# 6. Transcode Asciinema cast to MP4
+# 6. Follow live terminal renders non-invasively
+termreel peek -f
+
+# 7. Transcode Asciinema cast to MP4
 termreel cast2video session.cast -o session.mp4 --theme dracula
 
-# 7. Resume an ongoing session or conversation
+# 8. Resume an ongoing session or conversation
 termreel record scenarios/git_demo.yaml --resume
 
-# 8. Verify secret masking and realistic value substitutions
+# 9. Verify secret masking and realistic value substitutions
 termreel mask --verify output/session.cast --strict
 
-# 9. Run full test suite in parallel
-termreel test -w 8
+# 10. Concurrently render batch scenarios with reports
+termreel batch scenarios/*.yaml -c 4 --output-dir output/
+
+# 11. Multimodal video quality and rubric audit with Gemini / Vertex AI
+termreel audit output/git_demo.mp4 --spec scenarios/git_demo.yaml
+
+# 12. Run full test suite in parallel (or -f for sub-15s fast run)
+termreel test -f
 ```
 
 ---

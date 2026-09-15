@@ -740,15 +740,17 @@ class ScenarioRunner:
         if not self.supervisor:
             raise RuntimeError("Cannot execute edit_file: No CLI session launched.")
 
-        path = params.get("path") or params.get("value")
-        if not path:
+        raw_path = params.get("path") or params.get("value")
+        if not raw_path:
             raise ValueError("Missing file path for edit_file step.")
 
         # Resolve target file path relative to working directory
-        full_path = path if os.path.isabs(path) else os.path.join(self._work_dir, path)
+        expanded_path = os.path.expanduser(raw_path)
+        full_path = expanded_path if os.path.isabs(expanded_path) else os.path.join(self._work_dir, expanded_path)
         os.makedirs(os.path.dirname(os.path.abspath(full_path)), exist_ok=True)
         file_exists = os.path.isfile(full_path)
         file_size = os.path.getsize(full_path) if file_exists else 0
+        path = raw_path
 
         action = str(params.get("action", "replace")).lower()
         content = params.get("content", "")
