@@ -398,20 +398,27 @@ When TermReel runs background renders or long-running agent workflows, use `term
 # 1. Take an instantaneous snapshot of the latest active recording session
 termreel peek
 
-# 2. Follow the live terminal screen at 10 FPS (press 'q' or 'Ctrl+C' to exit)
+# 2. Target a specific session by ID prefix or process PID
+termreel peek 12345
+termreel peek tr_a1b2c3d4
+
+# 3. Follow the live terminal screen at 10 FPS (press 'q' or 'Ctrl+C' to exit)
 termreel peek -f
 
-# 3. List all active and recent recording sessions
+# 4. Follow with a custom refresh interval (e.g. 20 FPS / 50ms)
+termreel peek -f --interval 0.05
+
+# 5. List all active and recent recording sessions
 termreel peek --list
 
-# 4. Capture a high-resolution PNG screenshot of the current live vector frame
+# 6. Capture a high-resolution PNG screenshot of the current live vector frame
 termreel peek --image /tmp/live_screen.png
 
-# 5. Launch a local web dashboard for browser observation
+# 7. Launch a local web dashboard for browser observation
 termreel peek --web 8989
 # Access via http://pauldatta.c.googlers.com:8989 or http://localhost:8989
 
-# 6. Output raw plain text without HUD borders (for pipes or automated agent checks)
+# 8. Output raw plain text without HUD borders (for pipes or automated agent checks)
 termreel peek --raw
 ```
 
