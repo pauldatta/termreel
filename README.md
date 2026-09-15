@@ -22,9 +22,12 @@
 | **CLI Explorer & Scaffolding**| Binary probing for subcommands, usage, and security permission boundaries. | Auto-scaffolds validated scenario YAML manifests (`termreel probe` / `termreel generate`). |
 | **Session Resumption** | Multi-stage workflow checkpointing via `--resume` / `-c` and conversation ID tracking. | Seamlessly attaches to existing agent sessions without restarting the workspace. |
 | **Batch Orchestrator** | Concurrently render multi-scenario test suites (`termreel batch`) with automatic poster frame sync. | Eliminates custom shell scripts; generates consolidated JSON and Markdown batch reports. |
-| **Multimodal Video Audit** | Automated video evaluation via `gemini-3.1-pro-preview` with 100-point rubric (`termreel audit`). | Visual regression testing against scenario specs with automated CI pass/fail thresholding. |
+| **Multimodal Video Audit** | Automated video evaluation via `gemini-3.1-pro-preview` / Vertex AI with 100-point rubric (`termreel audit`). | Visual regression testing against scenario specs with automated CI pass/fail thresholding and Ambient ADC support. |
 | **Live Hand-Driven Capture** | Record your own shell (`termreel live`) with rebindable hotkey pause/resume; paused time is cut from the video and the seam is crossfaded. | Demos that need human judgement mid-take, without post-editing or a manifest. |
 | **Masking & Value Substitution** | Realistic fake substitution, contextual anchors, regex redaction, global `~/.termreel/config.yaml`, and verification auditing (`termreel mask`). | Prevents secret and project ID leakage while keeping recorded commands copyable and natural across video and `.cast` streams. |
+| **Dynamic Video Speedup** | Time dilation via producer-side frame decimation (`speedup` / `timelapse`) with synced `.cast` clock. | Compresses long commands (evals, model grading) into fast-forward sequences with status pill indicator (`⏩ 8x`). |
+| **Hermetic Vim Editor** | First-class `edit_file` action handling vim buffer clearing, bracketed paste, and clean exit. | Displays authentic code creation on screen without manual vim keystroke choreography or indentation staircase. |
+| **Assertion Output Gates** | Direct assertions on `run_shell` (`assert_output`) and standalone `assert:` with scrollback inspection. | Catches broken command state immediately during scenario execution rather than discovering failures post-render. |
 
 
 

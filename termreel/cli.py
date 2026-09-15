@@ -97,8 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # 9. test
     test_parser = subparsers.add_parser("test", help="Run the test suite concurrently with high-speed async execution")
-    test_parser.add_argument("-w", "--workers", type=int, default=8, help="Number of concurrent worker threads (default: 8)")
+    test_parser.add_argument("-w", "--workers", type=int, default=None, help="Number of concurrent worker threads (default: auto min(16, cores))")
     test_parser.add_argument("-d", "--dir", default="tests", help="Directory containing test cases (default: tests)")
+    test_parser.add_argument("-k", "--filter", dest="test_filter", help="Filter test cases by regex/substring pattern")
+    test_parser.add_argument("-f", "--fast", action="store_true", help="Fast mode: skip long-running E2E tests for rapid iteration")
 
     # 10. batch
     batch_parser = subparsers.add_parser("batch", help="Run scenario recordings concurrently in parallel batches")
@@ -121,6 +123,9 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--threshold", type=int, default=80, help="Pass/fail scorecard score threshold 0-100 (default: 80)")
     audit_parser.add_argument("--chunk-duration", type=float, default=300.0, help="Maximum segment window in seconds for long video auditing (default: 300.0s / 5 mins)")
     audit_parser.add_argument("--no-chunk", action="store_true", help="Disable automated windowed chunking for long videos")
+    audit_parser.add_argument("--vertexai", action="store_true", help="Use Google Cloud Vertex AI and Ambient ADC instead of Gemini Developer API")
+    audit_parser.add_argument("--project", help="Google Cloud project ID for Vertex AI evaluation")
+    audit_parser.add_argument("--location", help="Google Cloud region for Vertex AI evaluation (e.g. us-central1, global)")
     audit_parser.add_argument("--report", help="Destination path to save Markdown or JSON audit report")
     audit_parser.add_argument("--json", action="store_true", help="Output scorecard in JSON format")
 
@@ -422,7 +427,12 @@ def cmd_info() -> int:
 
 def cmd_test(args: argparse.Namespace) -> int:
     from termreel.testing import run_parallel_tests
-    return run_parallel_tests(start_dir=args.dir, max_workers=args.workers)
+    return run_parallel_tests(
+        start_dir=args.dir,
+        max_workers=args.workers,
+        test_filter=getattr(args, "test_filter", None),
+        fast=getattr(args, "fast", False),
+    )
 
 
 def cmd_batch(args: argparse.Namespace) -> int:
@@ -455,6 +465,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
         threshold=args.threshold,
         chunk_duration=getattr(args, "chunk_duration", 300.0),
         auto_chunk=not getattr(args, "no_chunk", False),
+        vertexai=getattr(args, "vertexai", False),
+        project=getattr(args, "project", None),
+        location=getattr(args, "location", None),
     )
     report = auditor.audit()
 

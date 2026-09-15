@@ -266,12 +266,18 @@ VALID_ACTIONS = {
     "wait_for_text", "wait",
     "pause", "sleep",
     "run_shell", "exec",
-    "assert",
+    "assert", "assert_output", "assert_screen",
+    "speedup", "timelapse",
+    "edit_file", "edit",
+    "split_pane", "split",
+    "select_pane",
+    "close_pane",
     "wait_for_hook_event", "wait_hook",
     "assert_hook_event", "assert_hook",
     "set_statusbar",
     "inspect_modal",
 }
+
 
 
 def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioManifest:
@@ -543,12 +549,68 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
                     raise ScenarioValidationError(
                         f"Invalid '{step_key}' step: expected string or dictionary, got {type(step_val).__name__}: {step_val}"
                     )
+            elif step_key in ("edit_file", "edit"):
+                if isinstance(step_val, dict):
+                    if not step_val.get("path"):
+                        raise ScenarioValidationError(
+                            f"Missing 'path' in '{step_key}' step at index {idx}: file path is required."
+                        )
+                    params = dict(step_val)
+                elif isinstance(step_val, str):
+                    params = {"path": step_val}
+                else:
+                    raise ScenarioValidationError(
+                        f"Invalid '{step_key}' step at index {idx}: expected dictionary or file path string."
+                    )
+            elif step_key in ("speedup", "timelapse"):
+                if isinstance(step_val, (int, float)):
+                    if step_val <= 0:
+                        raise ScenarioValidationError(f"Invalid speedup factor at index {idx}: must be positive, got {step_val}")
+                    params = {"factor": float(step_val)}
+                elif isinstance(step_val, dict):
+                    params = dict(step_val)
+                    factor = float(params.get("factor", params.get("value", 2.0)))
+                    if factor <= 0:
+                        raise ScenarioValidationError(f"Invalid speedup factor at index {idx}: must be positive, got {factor}")
+                else:
+                    raise ScenarioValidationError(f"Invalid '{step_key}' step at index {idx}: expected number or dictionary.")
+            elif step_key in ("assert", "assert_output", "assert_screen"):
+                if isinstance(step_val, str):
+                    params = {"contains": step_val}
+                elif isinstance(step_val, dict):
+                    params = dict(step_val)
+                elif isinstance(step_val, list):
+                    params = {"contains": step_val}
+                else:
+                    params = {"value": step_val}
+            elif step_key in ("split_pane", "split"):
+                if isinstance(step_val, str):
+                    params = {"direction": step_val}
+                elif isinstance(step_val, dict):
+                    params = dict(step_val)
+                else:
+                    params = {"direction": "horizontal"}
+            elif step_key == "select_pane":
+                if isinstance(step_val, int):
+                    params = {"pane_index": step_val}
+                elif isinstance(step_val, dict):
+                    params = dict(step_val)
+                else:
+                    params = {"pane_index": int(step_val)}
+            elif step_key == "close_pane":
+                if isinstance(step_val, int):
+                    params = {"pane_index": step_val}
+                elif isinstance(step_val, dict):
+                    params = dict(step_val)
+                else:
+                    params = {}
             elif isinstance(step_val, dict):
                 params = step_val
             elif isinstance(step_val, list):
                 params = {"commands": step_val}
             else:
                 params = {"value": step_val}
+
 
             timeline.append(TimelineStep(step_type=step_key, params=params))
 

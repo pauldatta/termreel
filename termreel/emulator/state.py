@@ -421,16 +421,32 @@ class TerminalState:
             lines.pop()
         return "\n".join(lines)
 
-    def contains(self, substring: str, case_sensitive: bool = False) -> bool:
-        """Check if substring exists anywhere in current rendered screen."""
-        text = self.get_rendered_text()
+    def get_full_text(self, history_lines: int = 500, strip_trailing: bool = True) -> str:
+        """Get visible screen lines plus recent scrollback lines as a newline-separated string."""
+        with self._lock:
+            hist = []
+            if self.scrollback and history_lines > 0:
+                for row in self.scrollback[-history_lines:]:
+                    txt = "".join(c.char for c in row)
+                    if strip_trailing:
+                        txt = txt.rstrip()
+                    hist.append(txt)
+            vis = [self.get_line_text(r, strip_trailing=strip_trailing) for r in range(self.rows)]
+            all_lines = hist + vis
+            while all_lines and not all_lines[-1]:
+                all_lines.pop()
+            return "\n".join(all_lines)
+
+    def contains(self, substring: str, case_sensitive: bool = False, scope: str = "visible") -> bool:
+        """Check if substring exists in terminal screen or scrollback history."""
+        text = self.get_full_text() if scope.lower() == "all" else self.get_rendered_text()
         if not case_sensitive:
             return substring.lower() in text.lower()
         return substring in text
 
-    def search_regex(self, pattern: Union[str, Pattern]) -> bool:
-        """Check if regex pattern matches anywhere in current rendered screen."""
-        text = self.get_rendered_text()
+    def search_regex(self, pattern: Union[str, Pattern], scope: str = "visible") -> bool:
+        """Check if regex pattern matches in terminal screen or scrollback history."""
+        text = self.get_full_text() if scope.lower() == "all" else self.get_rendered_text()
         if isinstance(pattern, str):
             return bool(re.search(pattern, text))
         return bool(pattern.search(text))

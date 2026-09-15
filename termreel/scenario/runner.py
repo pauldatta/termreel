@@ -129,6 +129,10 @@ class ScenarioRunner:
         self._status_left: Optional[str] = self.manifest.metadata.statusbar_left
         self._status_right: Optional[str] = self.manifest.metadata.statusbar_right
         self._status_pill: str = "● LIVE TTY"
+        self._base_status_pill: str = "● LIVE TTY"
+        self._speedup_factor: float = 1.0
+        self._speedup_indicator: Optional[str] = None
+        self._frame_accumulator: float = 0.0
 
         self._is_recording = False
         self._capture_thread: Optional[threading.Thread] = None
@@ -361,6 +365,31 @@ class ScenarioRunner:
             except Exception:
                 pass
 
+    def set_speedup(self, spec: Any) -> None:
+        """Set dynamic terminal video speedup factor and status pill badge."""
+        with self._lock:
+            if spec is None or spec is False:
+                self._speedup_factor = 1.0
+                self._speedup_indicator = None
+                self._frame_accumulator = 0.0
+                return
+            if isinstance(spec, (int, float)):
+                self._speedup_factor = max(1.0, float(spec))
+                self._speedup_indicator = (
+                    f"⏩ {int(self._speedup_factor) if self._speedup_factor.is_integer() else self._speedup_factor}x"
+                    if self._speedup_factor > 1.0
+                    else None
+                )
+            elif isinstance(spec, dict):
+                factor = float(spec.get("factor", spec.get("value", 2.0)))
+                self._speedup_factor = max(1.0, factor)
+                self._speedup_indicator = spec.get("indicator")
+                if self._speedup_factor > 1.0 and not self._speedup_indicator:
+                    self._speedup_indicator = (
+                        f"⏩ {int(self._speedup_factor) if self._speedup_factor.is_integer() else self._speedup_factor}x"
+                    )
+            self._frame_accumulator = 0.0
+
     def _capture_loop(self):
         """Continuous frame rasterization and video streaming loop."""
         frame_interval = 1.0 / float(self.fps)
@@ -394,15 +423,32 @@ class ScenarioRunner:
                     card = self._active_card
                     s_left = self._status_left
                     s_right = self._status_right
-                    s_pill = self._status_pill
+                    if self._speedup_factor > 1.0:
+                        s_pill = self._speedup_indicator or (
+                            f"⏩ {int(self._speedup_factor) if self._speedup_factor.is_integer() else self._speedup_factor}x"
+                        )
+                    else:
+                        s_pill = self._status_pill
+                    speedup = self._speedup_factor
 
-                # Render PyCairo frame to raw BGRA bytes and stream to FFmpeg
-                self._render_and_write_frame(
-                    card=card,
-                    s_left=s_left,
-                    s_right=s_right,
-                    s_pill=s_pill,
-                )
+                # Time dilation via frame decimation:
+                should_render = False
+                if speedup <= 1.0:
+                    should_render = True
+                else:
+                    self._frame_accumulator += 1.0
+                    if self._frame_accumulator >= speedup:
+                        self._frame_accumulator -= speedup
+                        should_render = True
+
+                if should_render:
+                    # Render PyCairo frame to raw BGRA bytes and stream to FFmpeg
+                    self._render_and_write_frame(
+                        card=card,
+                        s_left=s_left,
+                        s_right=s_right,
+                        s_pill=s_pill,
+                    )
 
             except Exception as e:
                 # Avoid breaking capture loop on minor frame jitter
@@ -494,6 +540,7 @@ class ScenarioRunner:
                     height=self.renderer.rows,
                     title=self.manifest.metadata.title,
                     redactor=self.redactor,
+                    clock=lambda: (self.ffmpeg_pipe.frame_count / float(self.fps)) if (self.ffmpeg_pipe and self.fps > 0) else 0.0,
                 )
                 self.asciicast.start()
                 self._log(f"Started Asciicast logging -> {cast_path}")
@@ -688,12 +735,150 @@ class ScenarioRunner:
         if pause_after > 0:
             time.sleep(pause_after)
 
+    def _execute_edit_file(self, params: Dict[str, Any]):
+        """Hermetic Vim driver for editing files on screen."""
+        if not self.supervisor:
+            raise RuntimeError("Cannot execute edit_file: No CLI session launched.")
+
+        path = params.get("path") or params.get("value")
+        if not path:
+            raise ValueError("Missing file path for edit_file step.")
+
+        # Resolve target file path relative to working directory
+        full_path = path if os.path.isabs(path) else os.path.join(self._work_dir, path)
+        os.makedirs(os.path.dirname(os.path.abspath(full_path)), exist_ok=True)
+        file_exists = os.path.isfile(full_path)
+        file_size = os.path.getsize(full_path) if file_exists else 0
+
+        action = str(params.get("action", "replace")).lower()
+        content = params.get("content", "")
+        pause_after = float(params.get("pause_after", params.get("pause", 1.0)))
+
+        # Launch vim with clean options: no vimrc, no viminfo, no swap, autoindent and paste mode
+        vim_cmd = f"vim -u NONE -i NONE -n -c \"set noswapfile nocompatible syntax=on autoindent paste\" {path}"
+        self.supervisor.send_input(vim_cmd + "\n")
+        time.sleep(0.6)
+
+        # Perform action
+        if action == "replace":
+            # IMPORTANT: In Vim, running :%d on an empty or new file causes 'E16: Invalid range'
+            if file_size > 0:
+                self.supervisor.send_input(":%d\r")
+                time.sleep(0.3)
+            self.supervisor.send_input("i")
+        elif action == "append":
+            self.supervisor.send_input("G")
+            time.sleep(0.2)
+            self.supervisor.send_input("o")
+        elif action in ("insert", "prepend"):
+            self.supervisor.send_input("i")
+        else:
+            self.supervisor.send_input("i")
+        time.sleep(0.3)
+
+        # Paste content using bracketed paste
+        if content:
+            self.supervisor.send_input(f"\x1b[200~{content}\x1b[201~")
+            time.sleep(0.5)
+
+        # Exit insert mode and save
+        self.supervisor.send_input("\x1b")
+        time.sleep(0.3)
+        self.supervisor.send_input(":wq\r")
+        time.sleep(0.6)
+
+        if pause_after > 0:
+            time.sleep(pause_after)
+
+    def _execute_assert(self, params: Dict[str, Any]):
+        """Evaluate output/screen assertions against terminal content."""
+        if not self.supervisor:
+            raise RuntimeError("Cannot execute assertion: No CLI session launched.")
+
+        scope = str(params.get("scope", "visible")).lower()
+        timeout = float(params.get("timeout", 5.0))
+        on_fail = str(params.get("on_fail", "abort")).lower()
+
+        contains = params.get("contains")
+        not_contains = params.get("not_contains")
+        pattern = params.get("pattern")
+        negate = bool(params.get("negate", False))
+
+        start_t = time.time()
+        last_text = ""
+        success = False
+
+        while time.time() - start_t < timeout:
+            if scope == "all":
+                if hasattr(self.supervisor, "capture_plain"):
+                    try:
+                        last_text = self.supervisor.capture_plain(include_scrollback=True)
+                    except TypeError:
+                        last_text = self.supervisor.capture_plain()
+                elif hasattr(self.state, "get_full_text"):
+                    last_text = self.state.get_full_text()
+                else:
+                    last_text = self.supervisor.capture_plain()
+            else:
+                last_text = self.supervisor.capture_plain()
+
+            passed = True
+            if contains is not None:
+                items = [contains] if isinstance(contains, str) else contains
+                for item in items:
+                    if str(item) not in last_text:
+                        passed = False
+                        break
+
+            if passed and not_contains is not None:
+                items = [not_contains] if isinstance(not_contains, str) else not_contains
+                for item in items:
+                    if str(item) in last_text:
+                        passed = False
+                        break
+
+            if passed and pattern is not None:
+                regex = re.compile(pattern, re.MULTILINE)
+                found = bool(regex.search(last_text))
+                if (negate and found) or (not negate and not found):
+                    passed = False
+
+            if passed:
+                success = True
+                break
+            time.sleep(0.2)
+
+        if not success:
+            err_msg = (
+                f"Assertion failed (scope={scope}, timeout={timeout}s).\n"
+                f"Conditions not met (contains={contains}, not_contains={not_contains}, pattern={pattern}).\n"
+                f"Screen buffer tail:\n{last_text[-500:] if last_text else '<empty>'}"
+            )
+            if on_fail == "warn":
+                self._log(f"⚠️ {err_msg}")
+            else:
+                raise AssertionError(err_msg)
+
     def _execute_step(self, step: TimelineStep, index: int):
         """Execute a single timeline step."""
         st = step.step_type
         params = step.params
         self._log(f"Step {index + 1}: [{st}] {params}")
 
+        # Check for inline speedup configuration on step
+        step_speedup = params.get("speedup") if isinstance(params, dict) else None
+        prev_speedup = (self._speedup_factor, self._speedup_indicator)
+        if step_speedup is not None:
+            self.set_speedup(step_speedup)
+
+        try:
+            self._dispatch_step(st, params)
+        finally:
+            if step_speedup is not None:
+                self.set_speedup({"factor": prev_speedup[0], "indicator": prev_speedup[1]})
+
+    def _dispatch_step(self, st: str, params: Dict[str, Any]):
+        """Dispatch timeline step action."""
         if st in ("show_card", "card"):
             tag = params.get("tag", "MODULE")
             title = params.get("title", "")
@@ -869,15 +1054,64 @@ class ScenarioRunner:
             if pause_after > 0:
                 time.sleep(pause_after)
 
-        elif st == "assert":
-            pattern = params.get("pattern") or params.get("value", "")
-            timeout = float(params.get("timeout", 10.0))
-            negate = bool(params.get("negate", False))
-            if self.supervisor:
-                if negate:
-                    self.monitor.assert_text_absent(pattern, supervisor=self.supervisor, timeout=timeout)
+            # Check assert_output if configured on run_shell
+            assert_spec = params.get("assert_output") or params.get("assert")
+            if assert_spec and self.supervisor:
+                if isinstance(assert_spec, str):
+                    assert_params = {"contains": assert_spec}
+                elif isinstance(assert_spec, dict):
+                    assert_params = dict(assert_spec)
+                elif isinstance(assert_spec, list):
+                    assert_params = {"contains": assert_spec}
                 else:
-                    self.monitor.assert_text_present(pattern, supervisor=self.supervisor, timeout=timeout)
+                    assert_params = {"contains": str(assert_spec)}
+                assert_params.setdefault("scope", "all")
+                self._execute_assert(assert_params)
+
+        elif st in ("assert", "assert_output", "assert_screen"):
+            self._execute_assert(params)
+
+        elif st in ("speedup", "timelapse"):
+            self.set_speedup(params)
+            pause_after = float(params.get("pause", 0.0))
+            if pause_after > 0:
+                time.sleep(pause_after)
+
+        elif st in ("edit_file", "edit"):
+            self._execute_edit_file(params)
+
+        elif st in ("split_pane", "split"):
+            direction = params.get("direction", "horizontal")
+            percent = int(params.get("percent", 50))
+            cmd_pane = params.get("command")
+            pause_after = float(params.get("pause", 0.5))
+            if isinstance(self.supervisor, TmuxSupervisor):
+                self.supervisor.split_pane(direction=direction, percent=percent, command=cmd_pane)
+            else:
+                self._log(f"⚠️ split_pane requested but supervisor is not TmuxSupervisor (backend={self.backend})")
+            if pause_after > 0:
+                time.sleep(pause_after)
+
+        elif st == "select_pane":
+            pane_idx = int(params.get("pane_index", params.get("value", 0)))
+            pause_after = float(params.get("pause", 0.5))
+            if isinstance(self.supervisor, TmuxSupervisor):
+                self.supervisor.select_pane(pane_index=pane_idx)
+            else:
+                self._log(f"⚠️ select_pane requested but supervisor is not TmuxSupervisor (backend={self.backend})")
+            if pause_after > 0:
+                time.sleep(pause_after)
+
+        elif st == "close_pane":
+            pane_idx = params.get("pane_index", params.get("value"))
+            idx = int(pane_idx) if pane_idx is not None else None
+            pause_after = float(params.get("pause", 0.5))
+            if isinstance(self.supervisor, TmuxSupervisor):
+                self.supervisor.close_pane(pane_index=idx)
+            else:
+                self._log(f"⚠️ close_pane requested but supervisor is not TmuxSupervisor (backend={self.backend})")
+            if pause_after > 0:
+                time.sleep(pause_after)
 
         elif st in ("wait_for_hook_event", "wait_hook"):
             ev_type = params.get("event") or params.get("event_type") or params.get("value", "")

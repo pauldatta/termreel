@@ -167,9 +167,11 @@ Performs automated multimodal video verification and scoring against a specifica
 - `--threshold <int>`: Minimum passing score out of 100 (default: 80).
 - `--chunk-duration <float>`: Maximum segment window in seconds for long video auditing (default: 300.0s / 5 mins). Automatically prevents exceeding the 1M token context limit on long recordings.
 - `--no-chunk`: Disable automated windowed chunking for long videos.
+- `--vertexai`: Use Google Cloud Vertex AI and Ambient Application Default Credentials (ADC) instead of Gemini Developer API (`GEMINI_API_KEY`).
+- `--project <id>`: Google Cloud project ID for Vertex AI evaluation.
+- `--location <region>`: Google Cloud region (e.g. `us-central1`, `global`).
 - `--report <path>`: Path to save the audit report scorecard (Markdown or JSON).
 - `--json`: Output raw JSON scorecard to stdout.
-
 
 ### `termreel exec`
 ```bash
@@ -200,9 +202,12 @@ termreel generate <binary> [options]
 
 ### `termreel test`
 ```bash
-termreel test [-w <workers>] [-d <test_dir>]
+termreel test [-w <workers>] [-f] [-k <pattern>] [-d <test_dir>]
 ```
-Runs unit and integration tests in parallel (e.g. `termreel test -w 8`).
+Runs unit and integration tests in parallel (auto-scaling up to 16 workers).
+- `-w, --workers <int>`: Number of concurrent test worker processes (default: `min(16, cpu_count)`).
+- `-f, --fast`: Skip heavy interactive CLI end-to-end tests for sub-15s rapid feedback.
+- `-k, --filter <pattern>`: Filter and run only test cases matching regex or substring.
 
 ### `termreel peek`
 ```bash
@@ -237,6 +242,72 @@ termreel mask --verify output/session.cast --strict
 # Test value substitution interactively
 termreel mask --test "gcloud config set project elevate-security-2026"
 # Output: gcloud config set project acme-demo-42
+```
+
+---
+
+## Scenario Manifest Actions Reference
+
+In addition to standard actions (`launch`, `type`, `send_key`, `pause`, `show_card`, `wait_for_idle`), TermReel supports advanced workflow actions:
+
+### Dynamic Video Speedup (`speedup` / `timelapse`)
+Dilation via frame decimation to compress long-running tasks into smooth, fast-forward sequences.
+```yaml
+# Inline step speedup (automatically restored when step finishes)
+- run_shell: "npm run build"
+  speedup:
+    factor: 8.0
+    indicator: "⏩ 8x"
+
+# Standalone speedup control
+- speedup:
+    factor: 4.0
+    indicator: "⏩ 4x"
+# ... subsequent steps run 4x faster ...
+- speedup: 1.0  # reset back to real-time
+```
+
+### Hermetic Vim Editor (`edit_file` / `edit`)
+Authentic on-screen code editing without manual vim choreography fragility. Automatically handles syntax highlighting, paste mode, buffer clearing (skipping `:%d` on empty/new files to avoid Vim `E16`), bracketed paste, and `:wq` exit.
+```yaml
+- edit_file:
+    path: "app/agent.py"
+    action: "replace"  # "replace", "append", "insert"
+    content: |
+      from google.adk import Agent
+      root_agent = Agent(name="assistant")
+    pause_after: 1.0
+```
+
+### Output Assertion Gates (`assert_output` / `assert` / `assert_screen`)
+Fails immediately when required text is missing or forbidden errors appear.
+```yaml
+# Attached to run_shell (defaults to scope: "all" to inspect scrollback)
+- run_shell: "agents-cli eval run"
+  assert_output:
+    contains: "Benchmark completed"
+    not_contains: "Traceback"
+    scope: "all"
+    on_fail: "abort"  # or "warn"
+
+# Standalone assertion step
+- assert:
+    contains: "Ready for input"
+    scope: "visible"
+    timeout: 5.0
+```
+
+### Multi-Pane Tmux Layouts (`split_pane`, `select_pane`, `close_pane`)
+Split-screen layouts when running with `--backend tmux`:
+```yaml
+- split_pane:
+    direction: "horizontal"
+    percent: 40
+    command: "tail -f server.log"
+- select_pane: 1
+- run_shell: "curl http://localhost:8000"
+- select_pane: 0
+- close_pane: 1
 ```
 
 

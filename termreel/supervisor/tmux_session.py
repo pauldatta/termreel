@@ -127,16 +127,56 @@ class TmuxSupervisor(BaseSupervisor):
         )
         return res.stdout if res.returncode == 0 else ""
 
-    def capture_plain(self) -> str:
-        """Capture current pane as plain text."""
+    def capture_plain(self, include_scrollback: bool = False, history_lines: int = 500) -> str:
+        """Capture current pane as plain text, optionally including scrollback history."""
         if not self._started:
             return ""
+        cmd = ["tmux", "capture-pane", "-t", self.session_name, "-p"]
+        if include_scrollback:
+            cmd.extend(["-S", f"-{history_lines}"])
         res = subprocess.run(
-            ["tmux", "capture-pane", "-t", self.session_name, "-p"],
+            cmd,
             capture_output=True,
             text=True,
         )
         return res.stdout if res.returncode == 0 else ""
+
+    def split_pane(self, direction: str = "horizontal", percent: int = 50, command: Optional[str] = None) -> None:
+        """Split the current tmux window into panes."""
+        if not self._started:
+            raise RuntimeError("Tmux supervisor is not running.")
+        flag = "-h" if str(direction).lower() in ("horizontal", "h", "right") else "-v"
+        cmd = ["tmux", "split-window", "-t", self.session_name, flag, "-p", str(percent)]
+        if command:
+            cmd.append(command)
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f"Failed to split tmux pane: {res.stderr}")
+
+    def select_pane(self, pane_index: int = 0) -> None:
+        """Switch active pane focus in tmux."""
+        if not self._started:
+            raise RuntimeError("Tmux supervisor is not running.")
+        res = subprocess.run(
+            ["tmux", "select-pane", "-t", f"{self.session_name}:0.{pane_index}"],
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode != 0:
+            raise RuntimeError(f"Failed to select tmux pane {pane_index}: {res.stderr}")
+
+    def close_pane(self, pane_index: Optional[int] = None) -> None:
+        """Close/kill a tmux pane."""
+        if not self._started:
+            raise RuntimeError("Tmux supervisor is not running.")
+        target = f"{self.session_name}:0.{pane_index}" if pane_index is not None else self.session_name
+        res = subprocess.run(
+            ["tmux", "kill-pane", "-t", target],
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode != 0:
+            raise RuntimeError(f"Failed to close tmux pane {target}: {res.stderr}")
 
     def resize(self, rows: int, cols: int) -> None:
         """Resize tmux window geometry."""

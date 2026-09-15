@@ -164,6 +164,9 @@ class VideoAuditor:
         threshold: int = 80,
         chunk_duration: float = 300.0,
         auto_chunk: bool = True,
+        vertexai: bool = False,
+        project: Optional[str] = None,
+        location: Optional[str] = None,
     ):
         self.video_path = os.path.abspath(video_path)
         self.spec_path = os.path.abspath(spec_path) if spec_path else None
@@ -171,6 +174,9 @@ class VideoAuditor:
         self.threshold = int(threshold)
         self.chunk_duration = float(chunk_duration)
         self.auto_chunk = bool(auto_chunk)
+        self.vertexai = bool(vertexai or os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") == "1")
+        self.project = project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        self.location = location or os.environ.get("GOOGLE_CLOUD_LOCATION")
 
 
     def _probe_video(self) -> Dict[str, Any]:
@@ -236,6 +242,44 @@ class VideoAuditor:
         pixel_data = data[idx:]
         return width, height, pixel_data
 
+    def _extract_jpeg_frame(self, timestamp_sec: float) -> Optional[bytes]:
+        """Extract a single video frame as raw JPEG bytes directly from FFmpeg pipe."""
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-ss", f"{timestamp_sec:.2f}",
+            "-i", self.video_path,
+            "-vframes", "1",
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-",
+        ]
+        res = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True)
+        if res.returncode != 0 or not res.stdout:
+            return None
+        return res.stdout
+
+    def _extract_keyframe_parts(self, types_mod: Any, count: int = 5) -> List[Any]:
+        """Extract representative keyframe images as JPEG Parts for multimodal evaluation."""
+        try:
+            probe = self._probe_video()
+            duration = float(probe.get("format", {}).get("duration", 10.0))
+        except Exception:
+            duration = 10.0
+
+        parts = []
+        if count <= 1:
+            timestamps = [duration / 2.0]
+        else:
+            step = duration / float(count + 1)
+            timestamps = [step * (i + 1) for i in range(count)]
+
+        for ts in timestamps:
+            jpeg_bytes = self._extract_jpeg_frame(ts)
+            if jpeg_bytes:
+                parts.append(types_mod.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"))
+        return parts
+
     def _analyze_frame_pixels(self, width: int, height: int, pixels: bytes) -> Dict[str, Any]:
         """Compute pixel luminance, contrast ratio, variance, and text presence."""
         total_pixels = width * height
@@ -287,7 +331,8 @@ class VideoAuditor:
     ) -> Optional[AuditReport]:
         """Audit video using Google GenAI SDK (gemini-3.1-pro-preview)."""
         api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
+        is_vertex = bool(self.vertexai or os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") == "1")
+        if not api_key and not is_vertex:
             return None
 
         prompt = f"""
@@ -336,12 +381,41 @@ Return a strict JSON object with this exact structure:
             from google import genai
             from google.genai import types
 
-            client = genai.Client(api_key=api_key)
-            upload_res = client.files.upload(file=self.video_path)
+            client_kwargs: Dict[str, Any] = {}
+            if is_vertex:
+                client_kwargs["vertexai"] = True
+                if self.project:
+                    client_kwargs["project"] = self.project
+                elif os.environ.get("GOOGLE_CLOUD_PROJECT"):
+                    client_kwargs["project"] = os.environ.get("GOOGLE_CLOUD_PROJECT")
+                if self.location:
+                    client_kwargs["location"] = self.location
+                elif os.environ.get("GOOGLE_CLOUD_LOCATION"):
+                    client_kwargs["location"] = os.environ.get("GOOGLE_CLOUD_LOCATION")
+            elif api_key:
+                client_kwargs["api_key"] = api_key
+
+            client = genai.Client(**client_kwargs)
+
+            contents: List[Any] = []
+            if is_vertex:
+                file_size_mb = os.path.getsize(self.video_path) / (1024 * 1024)
+                if file_size_mb <= 20.0:
+                    with open(self.video_path, "rb") as vf:
+                        video_bytes = vf.read()
+                    contents.append(types.Part.from_bytes(data=video_bytes, mime_type="video/mp4"))
+                else:
+                    jpeg_parts = self._extract_keyframe_parts(types, count=5)
+                    contents.extend(jpeg_parts)
+            else:
+                upload_res = client.files.upload(file=self.video_path)
+                contents.append(upload_res)
+
+            contents.append(prompt)
 
             response = client.models.generate_content(
                 model=self.model_name,
-                contents=[upload_res, prompt],
+                contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                 ),
@@ -349,7 +423,8 @@ Return a strict JSON object with this exact structure:
 
             raw_text = response.text
             parsed = json.loads(raw_text)
-            return self._build_report_from_dict(parsed, mode=f"multimodal ({self.model_name})", metadata=metadata)
+            mode_desc = f"multimodal-vertex ({self.model_name})" if is_vertex else f"multimodal ({self.model_name})"
+            return self._build_report_from_dict(parsed, mode=mode_desc, metadata=metadata)
         except Exception:
             pass
 

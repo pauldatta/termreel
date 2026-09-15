@@ -170,14 +170,29 @@ class ScreenMonitor:
             if act.delay_after > 0:
                 time.sleep(act.delay_after)
 
+    def _get_target_text(self, sup: Optional[BaseSupervisor], scope: str = "visible") -> str:
+        """Extract terminal screen text taking scope (visible vs all scrollback) into account."""
+        if not sup:
+            return ""
+        if scope.lower() == "all":
+            if hasattr(sup, "state") and hasattr(sup.state, "get_full_text"):
+                return sup.state.get_full_text()
+            if hasattr(sup, "capture_plain"):
+                try:
+                    return sup.capture_plain(include_scrollback=True)
+                except TypeError:
+                    pass
+        return sup.capture_plain()
+
     def wait_for_text(
         self,
         pattern: Union[str, Pattern],
         supervisor: Optional[BaseSupervisor] = None,
         timeout: float = 30.0,
         poll_interval: float = 0.2,
+        scope: str = "visible",
     ) -> bool:
-        """Poll until pattern appears on screen or timeout expires."""
+        """Poll until pattern appears on screen (or scrollback) or timeout expires."""
         sup = supervisor or self.supervisor
         if not sup:
             raise ValueError("No supervisor provided.")
@@ -187,7 +202,7 @@ class ScreenMonitor:
 
         while time.time() - start_t < timeout:
             self.evaluate_and_react(sup)
-            txt = sup.capture_plain()
+            txt = self._get_target_text(sup, scope=scope)
             if regex.search(txt):
                 return True
             time.sleep(poll_interval)
@@ -250,20 +265,22 @@ class ScreenMonitor:
         pattern: Union[str, Pattern],
         supervisor: Optional[BaseSupervisor] = None,
         timeout: float = 10.0,
+        scope: str = "visible",
     ):
-        """Assertion method verifying that text appears in the terminal."""
-        if not self.wait_for_text(pattern, supervisor=supervisor, timeout=timeout):
+        """Assertion method verifying that text appears in the terminal screen or scrollback."""
+        if not self.wait_for_text(pattern, supervisor=supervisor, timeout=timeout, scope=scope):
             sup = supervisor or self.supervisor
-            current_screen = sup.capture_plain() if sup else "<no screen>"
-            raise AssertionError(f"Expected pattern '{pattern}' not found on terminal screen within {timeout}s.\nCurrent screen:\n{current_screen}")
+            current_screen = self._get_target_text(sup, scope=scope) if sup else "<no screen>"
+            raise AssertionError(f"Expected pattern '{pattern}' not found in terminal ({scope}) within {timeout}s.\nCurrent content:\n{current_screen}")
 
     def assert_text_absent(
         self,
         pattern: Union[str, Pattern],
         supervisor: Optional[BaseSupervisor] = None,
         timeout: float = 5.0,
+        scope: str = "visible",
     ):
-        """Assertion method verifying that text is NOT present in the terminal."""
+        """Assertion method verifying that text is NOT present in the terminal screen or scrollback."""
         sup = supervisor or self.supervisor
         if not sup:
             raise ValueError("No supervisor provided.")
@@ -272,7 +289,8 @@ class ScreenMonitor:
         start_t = time.time()
 
         while time.time() - start_t < timeout:
-            txt = sup.capture_plain()
+            txt = self._get_target_text(sup, scope=scope)
             if regex.search(txt):
-                raise AssertionError(f"Forbidden pattern '{pattern}' was found on screen:\n{txt}")
+                raise AssertionError(f"Forbidden pattern '{pattern}' was found in terminal ({scope}):\n{txt}")
             time.sleep(0.2)
+

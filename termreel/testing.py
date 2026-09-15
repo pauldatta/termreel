@@ -4,6 +4,8 @@ Discovers and executes unittest suites concurrently across worker threads or pro
 """
 
 import concurrent.futures
+import os
+import re
 import sys
 import time
 import unittest
@@ -19,8 +21,8 @@ def run_single_test(test_case: unittest.TestCase) -> Tuple[unittest.TestCase, un
     return test_case, res, duration
 
 
-def discover_all_tests(start_dir: str = "tests") -> List[unittest.TestCase]:
-    """Recursively discover and flatten all TestCase instances in the test directory."""
+def discover_all_tests(start_dir: str = "tests", test_filter: Optional[str] = None, fast: bool = False) -> List[unittest.TestCase]:
+    """Recursively discover and flatten all TestCase instances, applying optional filters."""
     suite = unittest.defaultTestLoader.discover(start_dir)
     tests = []
 
@@ -29,36 +31,54 @@ def discover_all_tests(start_dir: str = "tests") -> List[unittest.TestCase]:
             for child in node:
                 _flatten(child)
         elif isinstance(node, unittest.TestCase):
+            name = str(node)
+            if fast and ("pure_interactive" in name or "slow" in name):
+                return
+            if test_filter:
+                if not re.search(test_filter, name, re.IGNORECASE):
+                    return
             tests.append(node)
 
     _flatten(suite)
+    # Sort so potentially slow integration tests start earliest in the worker pool
+    tests.sort(key=lambda t: 0 if ("integration" in str(t).lower() or "audit" in str(t).lower()) else 1)
     return tests
 
 
 def run_parallel_tests(
     start_dir: str = "tests",
-    max_workers: int = 8,
+    max_workers: Optional[int] = None,
     verbose: bool = True,
+    test_filter: Optional[str] = None,
+    fast: bool = False,
+    show_durations: int = 5,
 ) -> int:
     """Run all discovered tests concurrently with aggregated results reporting."""
-    tests = discover_all_tests(start_dir)
+    if max_workers is None or max_workers <= 0:
+        max_workers = min(16, os.cpu_count() or 8)
+
+    tests = discover_all_tests(start_dir, test_filter=test_filter, fast=fast)
     total_tests = len(tests)
     if total_tests == 0:
-        print("No tests found.")
+        print("No tests found matching filter criteria.")
         return 0
 
     if verbose:
-        print(f"🚀 Running {total_tests} tests concurrently across {max_workers} async workers...\n")
+        filter_str = f" [filter: '{test_filter}']" if test_filter else ""
+        fast_str = " [fast mode: skipping slow E2E]" if fast else ""
+        print(f"🚀 Running {total_tests} tests concurrently across {max_workers} async workers{filter_str}{fast_str}...\n")
 
     start_time = time.time()
     passed = 0
     failures: List[Tuple[unittest.TestCase, str]] = []
     errors: List[Tuple[unittest.TestCase, str]] = []
+    durations: List[Tuple[str, float]] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {executor.submit(run_single_test, t): t for t in tests}
         for future in concurrent.futures.as_completed(future_map):
             test, res, duration = future.result()
+            durations.append((str(test), duration))
             if res.wasSuccessful():
                 passed += 1
                 if verbose:
@@ -91,6 +111,12 @@ def run_parallel_tests(
         for test, err in errors:
             print(f"\nERROR: {test}\n{'-' * 70}\n{err}")
 
+    durations.sort(key=lambda x: x[1], reverse=True)
+    if show_durations > 0 and durations and durations[0][1] > 1.0:
+        print("\n⏱️  Slowest tests:")
+        for name, dur in durations[:show_durations]:
+            print(f"   {dur:.2f}s - {name}")
+
     print("=" * 70)
     print(f"Ran {total_tests} tests in {total_time:.2f}s ({max_workers} workers)")
     if failures or errors:
@@ -104,7 +130,8 @@ def run_parallel_tests(
 
 
 if __name__ == "__main__":
-    workers = 8
+    workers = None
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         workers = int(sys.argv[1])
     sys.exit(run_parallel_tests(max_workers=workers))
+

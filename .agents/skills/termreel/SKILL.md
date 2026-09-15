@@ -297,9 +297,27 @@ timeline:
       send_key: "Enter"
       pause: 1.0
 
+  # Authentic on-screen code editing without raw vim choreography fragility
+  - edit_file:
+      path: "cache.py"
+      action: "replace"
+      content: |
+        class Cache:
+            def __init__(self):
+                self._data = {}
+      pause_after: 1.0
+
+  # Dilation via frame decimation to compress long test runs into fast-forward sequences
   - run_shell:
       command: "pytest -v"
-      pause: 2.0
+      pause: 1.0
+      speedup:
+        factor: 8.0
+        indicator: "⏩ 8x"
+      assert_output:
+        contains: "passed"
+        not_contains: "FAIL"
+        scope: "all"
 
   - show_card:
       tag: "Complete"
@@ -324,15 +342,23 @@ termreel batch scenarios/*.yaml \
 ```
 
 ### Multimodal Video Verification (`termreel audit`)
-Verify recorded videos against specifications using `gemini-3.1-pro-preview` with an automated 100-point rubric:
+Verify recorded videos against specifications using `gemini-3.1-pro-preview` with an automated 100-point rubric. Supports both Gemini Developer API (`GEMINI_API_KEY`) and Google Cloud Vertex AI via Ambient Application Default Credentials (ADC):
 ```bash
-# Audit video output against the scenario specification
+# Audit video output via Developer API
 termreel audit output/service_demo.mp4 \
   --spec scenarios/service_demo.yaml \
   --model gemini-3.1-pro-preview \
   --threshold 80 \
   --chunk-duration 300.0 \
   --report AUDIT_REPORT.md
+
+# Audit video output natively via Vertex AI & Ambient ADC
+termreel audit output/service_demo.mp4 \
+  --spec scenarios/service_demo.yaml \
+  --vertexai \
+  --project elevate-security-2026 \
+  --location global
+```
 ```
 
 #### Automated Windowed Chunking for Long Videos (1M Context Limit)
