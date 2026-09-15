@@ -124,7 +124,14 @@ timeline:
       duration: 2.5
 ```
 
-### 4. Provide Visual Context with Status Bars
+### 4. Authenticity & Video Quality Guidelines (Student-Ready Demos)
+When authoring video scenarios for tutorials, walkthroughs, or evaluations:
+- **No pre-staged file copies (`cp -r /tmp/staged_*/* .`)**: Fabrication hides the work the exercise teaches. Files must be created visibly on camera.
+- **No `cat << 'EOF'` heredocs**: Avoid raw bash heredocs in the shell timeline or in agent prompts. It makes AI agent pairing look like an old-fashioned shell tutorial. Use `edit_file` to write code cleanly on camera, or prompt the coding agent in natural language.
+- **No `--help` stand-ins**: Showing `cli --help` instead of executing the actual command skips the lesson. Run the real command and let viewers see the authentic tool output.
+- **The "Successful Run" Brief**: A video is only valid if a student could pause on any frame, type what is on screen, and land where the video lands.
+
+### 5. Provide Visual Context with Status Bars
 Set informative status bar metadata so viewers know the active tool, branch, and encoding resolution:
 ```yaml
 metadata:
@@ -138,7 +145,7 @@ Dynamically update it during execution with `set_statusbar`:
     right: "Phase 3/3"
 ```
 
-### 5. Always Redact Secrets and Tokens
+### 6. Always Redact Secrets and Tokens
 
 Built-in redactors automatically mask Google API keys, OAuth tokens (`ya29...`), GitHub PATs (`ghp_...`), AWS keys (`AKIA...`), and JWTs.
 
@@ -359,7 +366,10 @@ termreel audit output/service_demo.mp4 \
   --project elevate-security-2026 \
   --location global
 ```
-```
+
+> [!TIP]
+> **Ambient ADC on Google Cloud & Cloudtop**:
+> On corporate Google Cloudtops or GCP environments where credentials come from `gcert` or Application Default Credentials (ADC), pass `--vertexai --project <id> --location <region>` (or set `GOOGLE_GENAI_USE_VERTEXAI=1`). You do **not** need to create or export an external `GEMINI_API_KEY`. Video frames and keyframes are streamed directly to Vertex AI.
 
 #### Automated Windowed Chunking for Long Videos (1M Context Limit)
 Gemini video input samples at ~1 FPS (~258 tokens per second). Videos longer than 30–45 minutes quickly approach or exceed the 1M token context limit when combined with large PRDs and manifests.
@@ -485,42 +495,130 @@ A live run registers with the telemetry socket like any other session, so `termr
 
 ## 8. Field Ergonomics & Timeline Primitives
 
-1. **Structured `send_key`**:
-   Use dictionaries when you need precise pauses around control keys:
-   ```yaml
-   - send_key:
-       key: "Escape"
-       delay_before: 0.5
-       pause_after: 1.0
-   ```
-2. **TUI Modal Inspection (`inspect_modal`)**:
-   Cleanly demo popup dialogs (`/context`, `/stats`, `/diff`, `/agents`):
-   ```yaml
-   - inspect_modal:
-       open_command: "/context"
-       wait_for_render: "Token Usage"
-       display_duration: 3.0
-       dismiss_key: "Escape"
-       pause_after: 1.0
-   ```
-3. **Shell Prompt Synchronization (`wait_for_prompt`)**:
-   Prevent keystroke collisions with shell initialization prompts:
-   ```yaml
-   - launch:
-       command: "bash"
-       wait_for_prompt: true
-   ```
-4. **Soft Newline Collapsing**:
-   TermReel automatically collapses YAML multiline string wraps into single spaces so accidental line breaks don't submit premature commands. Use `multiline: true` only when literal line breaks are intentional.
+### 1. Hermetic Vim Editor (`edit_file` / `edit`)
+Shows code being written authentically on screen without the fragility of manual keystroke macros or indentation staircasing.
+```yaml
+- edit_file:
+    path: "app/agent.py"
+    action: "replace"           # "replace" (default), "append", "insert"
+    content: |
+      from google.adk import Agent
+      root_agent = Agent(name="assistant")
+    pause_after: 1.0
+```
+- Spawns `vim -u NONE -i NONE -n -c "set noswapfile nocompatible syntax=on autoindent paste"`.
+- Automatically checks file size; skips `:%d` on empty or newly created files, preventing Vim's `E16: Invalid range` error.
+- Transmits content via bracketed paste (`\x1b[200~...\x1b[201~`) to preserve exact formatting, then cleanly saves and exits with `:wq`.
+
+### 2. Dynamic Video Speedup & Timelapse (`speedup` / `timelapse`)
+Compresses long-running commands (package builds, evaluations, multi-model grading) into fast-forward sequences using producer-side frame decimation. Keystrokes, child processes, and `.cast` timestamps remain synchronized to video elapsed time.
+```yaml
+# Inline on run_shell (speedup applies during execution and automatically restores to 1.0x after)
+- run_shell: "agents-cli eval grade"
+  speedup:
+    factor: 8.0                 # 8x playback speedup
+    indicator: "⏩ 8x"           # Optional corner status pill badge during fast-forward
+
+# Standalone timeline control
+- speedup:
+    factor: 4.0
+    indicator: "⏩ 4x"
+# ... subsequent steps execute at 4x speed ...
+- speedup: 1.0                  # Reset back to real-time
+```
+
+### 3. Semantic Assertion Gates (`assert_output` / `assert` / `assert_screen`)
+Catches broken states (Python exceptions, syntax errors, failed test suites) immediately during recording rather than discovering failures post-render.
+```yaml
+# Inline on run_shell (defaults to scope: "all" to inspect scrollback)
+- run_shell: "pytest -v"
+  assert_output:
+    contains: "10 passed"       # String or list of strings that must be present
+    not_contains: "FAIL"        # String or list of strings that must NOT be present
+    scope: "all"                # "all" (inspects full scrollback) or "visible"
+    timeout: 5.0
+    on_fail: "abort"            # "abort" (raises error immediately) or "warn"
+
+# Standalone assertion step
+- assert:
+    contains: "Ready for input"
+    scope: "visible"
+    timeout: 5.0
+```
+
+### 4. Multi-Pane Tmux Layouts (`split_pane`, `select_pane`, `close_pane`)
+Enables split-screen layouts (e.g. agent pairing on the left, live logs or sidecar streaming on the right). Requires `--backend tmux`.
+```yaml
+- launch: "bash"
+- run_shell: "echo 'Main console ready'"
+
+# Split pane horizontally (side-by-side)
+- split_pane:
+    direction: "horizontal"     # "horizontal" (-h) or "vertical" (-v)
+    percent: 40                 # Width percentage
+    command: "tail -f server.log"
+
+# Switch focus between panes
+- select_pane: 1
+- run_shell: "curl -s http://localhost:8000"
+
+# Return focus to primary pane
+- select_pane: 0
+
+# Close auxiliary pane when done
+- close_pane: 1
+```
+
+### 5. Structured `send_key`
+Use dictionaries when you need precise pauses around control keys:
+```yaml
+- send_key:
+    key: "Escape"
+    delay_before: 0.5
+    pause_after: 1.0
+```
+
+### 6. TUI Modal Inspection (`inspect_modal`)
+Cleanly demo popup dialogs (`/context`, `/stats`, `/diff`, `/agents`):
+```yaml
+- inspect_modal:
+    open_command: "/context"
+    wait_for_render: "Token Usage"
+    display_duration: 3.0
+    dismiss_key: "Escape"
+    pause_after: 1.0
+```
+
+### 7. Shell Prompt Synchronization (`wait_for_prompt`)
+Prevent keystroke collisions with shell initialization prompts:
+```yaml
+- launch:
+    command: "bash"
+    wait_for_prompt: true
+    prompt_pattern: "([$#>]\s*$|%\s*$)"
+```
+
+### 8. Soft Newline Collapsing
+TermReel automatically collapses YAML multiline string wraps into single spaces so accidental line breaks don't submit premature commands. Use `multiline: true` only when literal line breaks are intentional.
 
 ---
 
-## 9. Parallel Test Execution
+## 9. Parallel Test Execution & Environment
 
-Run the complete test suite concurrently:
+TermReel includes an accelerated parallel test runner auto-scaling up to 16 workers:
 ```bash
-# Run all tests across 8 async worker threads
-termreel test -w 8
+# 1. Fast mode: runs 375 tests in ~13-15 seconds (skips heavy 65s interactive E2E suite)
+python3 -m termreel.cli test -f
+
+# 2. Filter mode: run specific test cases matching a pattern
+python3 -m termreel.cli test -k test_edit_file
+
+# 3. Full suite: runs all 377 unit, system, and interactive CLI tests
+python3 -m termreel.cli test
 ```
+
+> [!IMPORTANT]
+> **Python Environment Note**:
+> `.venv/bin/python` lacks PyCairo system bindings. Always run TermReel and its test suite using system `python3` (or the standalone `termreel` binary).
 
 
