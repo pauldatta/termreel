@@ -744,9 +744,17 @@ class ScenarioRunner:
         if not raw_path:
             raise ValueError("Missing file path for edit_file step.")
 
-        # Resolve target file path relative to working directory
+        # Resolve target file path relative to working directory or active child process cwd
         expanded_path = os.path.expanduser(raw_path)
-        full_path = expanded_path if os.path.isabs(expanded_path) else os.path.join(self._work_dir, expanded_path)
+        active_cwd = self._work_dir
+        if hasattr(self.supervisor, "process") and self.supervisor.process and getattr(self.supervisor.process, "pid", None):
+            try:
+                proc_cwd = os.readlink(f"/proc/{self.supervisor.process.pid}/cwd")
+                if os.path.isdir(proc_cwd):
+                    active_cwd = proc_cwd
+            except Exception:
+                pass
+        full_path = expanded_path if os.path.isabs(expanded_path) else os.path.join(active_cwd, expanded_path)
         os.makedirs(os.path.dirname(os.path.abspath(full_path)), exist_ok=True)
         file_exists = os.path.isfile(full_path)
         file_size = os.path.getsize(full_path) if file_exists else 0
