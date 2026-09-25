@@ -50,6 +50,8 @@ class ScreenMonitor:
         self._lock = threading.Lock()
         self._action_lock = threading.Lock()
         self._action_threads: List[threading.Thread] = []
+        # Every trigger firing: {"time", "trigger", "pattern", "keys"}.
+        self.injections: List[dict] = []
 
     def add_trigger(self, trigger: Trigger):
         """Register a new event trigger."""
@@ -79,24 +81,39 @@ class ScreenMonitor:
             return []
 
         with self._lock:
-            screen_text = sup.capture_plain()
+            view = getattr(sup, "capture_prompt_view", None)
+            if callable(view):
+                screen_text, cursor_row, scrolled = view()
+            else:
+                screen_text, cursor_row, scrolled = sup.capture_plain(), None, 0
             now = time.time()
             fired = []
 
             for trig in self.triggers:
-                if trig.can_fire(now) and trig.matches(screen_text):
+                # observe() runs on every evaluation, even while a trigger is
+                # cooling down, so edge triggers track prompt instances
+                # continuously instead of only when they are eligible.
+                if hasattr(trig, "observe"):
+                    waiting = trig.observe(screen_text, cursor_row, scrolled)
+                else:
+                    waiting = trig.matches(screen_text)
+                if waiting and trig.can_fire(now):
                     trig.mark_fired(now)
                     fired.append(trig)
+                    self._record_injection(trig, now)
+                    started = getattr(trig, "action_started", None)
+                    if callable(started):
+                        started()
                     if async_action:
                         t = threading.Thread(
                             target=self._execute_action,
-                            args=(trig.action, sup),
+                            args=(trig.action, sup, getattr(trig, "action_finished", None)),
                             daemon=True,
                         )
                         t.start()
                         self._action_threads.append(t)
                     else:
-                        self._execute_action(trig.action, sup)
+                        self._execute_action(trig.action, sup, getattr(trig, "action_finished", None))
 
             # Cleanup finished action threads
             if self._action_threads:
@@ -104,33 +121,88 @@ class ScreenMonitor:
 
             return fired
 
-    def _execute_action(self, action: Union[TriggerAction, List[TriggerAction], Callable, str], sup: BaseSupervisor):
-        """Execute the resolved action on the supervisor in a thread-safe manner."""
-        with self._action_lock:
-            if callable(action):
-                action(sup)
-                return
+    @staticmethod
+    def describe_action(action) -> List[str]:
+        """Human-readable list of the keys/text an action will inject."""
+        if callable(action) and not isinstance(action, TriggerAction):
+            return [f"callback:{getattr(action, '__name__', 'callable')}"]
+        out: List[str] = []
+        for act in (action if isinstance(action, list) else [action]):
+            if isinstance(act, str):
+                out.append(f"key:{act}")
+            elif isinstance(act, TriggerAction):
+                if act.action_type == ActionType.SEND_KEY:
+                    out.append(f"key:{act.value}")
+                elif act.action_type == ActionType.TYPE_TEXT:
+                    out.append(f"text:{act.value!r}")
+                elif act.action_type == ActionType.SELECT_CHOICE:
+                    out.append(f"choice:{act.value}")
+                elif act.action_type == ActionType.PAUSE:
+                    continue
+                else:
+                    out.append(str(act.action_type.value))
+        return out
 
-            actions_list = action if isinstance(action, list) else [action]
-            for act in actions_list:
+    def _record_injection(self, trig: Trigger, now: float) -> None:
+        self.injections.append({
+            "time": now,
+            "trigger": getattr(trig, "label", None) or "trigger",
+            "pattern": getattr(trig, "pattern_text", str(trig.pattern)),
+            "keys": self.describe_action(trig.action),
+        })
+
+    def _execute_action(self, action: Union[TriggerAction, List[TriggerAction], Callable, str], sup: BaseSupervisor,
+                        on_sent: Optional[Callable[[], None]] = None):
+        """
+        Execute the resolved action on the supervisor in a thread-safe manner.
+
+        ``on_sent`` is called as soon as the last key has been sent, before
+        that action's ``delay_after`` pause (the program may already be
+        printing its next prompt during the pause), and also if the action
+        fails.
+        """
+        notified = False
+
+        def _notify():
+            nonlocal notified
+            if not notified and on_sent is not None:
+                notified = True
                 try:
-                    self._execute_single_action(act, sup)
-                except KeySpecError as exc:
-                    # Unrecognised key specifications raise now rather than
-                    # being typed into the session as literal text. On this
-                    # daemon thread that would otherwise be an unhandled
-                    # traceback that also swallows every action queued behind
-                    # it, so report it and carry on.
-                    sys.stderr.write(
-                        f"[termreel] Trigger action skipped: {exc} "
-                        f"(use type: type_text to send literal text)\n"
-                    )
-                    sys.stderr.flush()
+                    on_sent()
+                except Exception:
+                    pass
 
-    def _execute_single_action(self, act, sup: BaseSupervisor):
+        try:
+            with self._action_lock:
+                if callable(action):
+                    action(sup)
+                    return
+
+                actions_list = action if isinstance(action, list) else [action]
+                for idx, act in enumerate(actions_list):
+                    last = idx == len(actions_list) - 1
+                    try:
+                        self._execute_single_action(act, sup, on_sent=_notify if last else None)
+                    except KeySpecError as exc:
+                        # Unrecognised key specifications raise now rather than
+                        # being typed into the session as literal text. On this
+                        # daemon thread that would otherwise be an unhandled
+                        # traceback that also swallows every action queued behind
+                        # it, so report it and carry on.
+                        sys.stderr.write(
+                            f"[termreel] Trigger action skipped: {exc} "
+                            f"(use type: type_text to send literal text)\n"
+                        )
+                        sys.stderr.flush()
+        finally:
+            _notify()
+
+    def _execute_single_action(self, act, sup: BaseSupervisor, on_sent: Optional[Callable[[], None]] = None):
         """Run one resolved trigger action against the supervisor."""
         if isinstance(act, str):
             sup.send_key(act)
+            if on_sent is not None:
+                on_sent()
         elif isinstance(act, TriggerAction):
             if act.delay_before > 0:
                 time.sleep(act.delay_before)
@@ -167,6 +239,8 @@ class ScreenMonitor:
             elif act.action_type == ActionType.CALLBACK and callable(act.value):
                 act.value(sup)
 
+            if on_sent is not None:
+                on_sent()
             if act.delay_after > 0:
                 time.sleep(act.delay_after)
 

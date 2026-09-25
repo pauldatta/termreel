@@ -18,6 +18,7 @@ environment:
   auto_trust: true
   preserve_workspace: true
   resume: true
+  auto_approve_dialogs: true
   setup_commands:
     - "git init"
     - "git config user.name 'Paul Datta'"
@@ -26,7 +27,6 @@ environment:
     - "git add service.py && git commit -m 'Initial service setup'"
 
 permissions:
-  auto_approve: true
   allow_commands: ["python3", "pytest", "git"]
   allow_tools: ["run_command", "write_to_file", "read_file"]
 

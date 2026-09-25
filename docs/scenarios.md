@@ -29,13 +29,15 @@ environment:
   resume: false                 # Auto-resume latest conversation in workspace
   conversation_id: null         # Or specify exact conversation ID
   preserve_workspace: false     # Keep workspace for subsequent scenario runs
+  auto_approve_dialogs: false   # Opt-in: answer permission / [y/N] dialogs (alias: auto_approve)
   setup_commands:
     - "git init"
     - "echo 'hello' > app.py"
 
 
+# Written to .agents/settings.json for agy. allow_commands/allow_tools are aliases of
+# allowed_commands/allowed_tools. There is no permissions.auto_approve switch.
 permissions:
-  auto_approve: true
   allow_commands: ["python3", "git", "pytest"]
   allow_tools: ["run_command", "write_to_file", "read_file"]
 

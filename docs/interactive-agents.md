@@ -38,28 +38,55 @@ Do you want to proceed?
 
 ### Two-Tier Handling Strategy:
 
-1. **Declarative Permissions in YAML**: Pre-configures approved policies in `.agents/settings.json`:
+1. **Declarative Permissions in YAML**: Pre-configures approved policies in `.agents/settings.json`.
+   `allow_commands` / `allow_tools` are accepted as aliases for `allowed_commands` / `allowed_tools`.
+   There is no `permissions.auto_approve` switch: that key is ignored and does **not** answer dialogs.
    ```yaml
    permissions:
-     auto_approve: true
      allow_commands: ["python3", "python3 app.py", "git", "pytest"]
      allow_tools: ["run_command", "write_to_file", "read_file", "grep_search"]
    ```
 
-2. **Reactive UI Prompt Interception**:
-   The screen reactor detects the modal dialog, holds the frame for a natural reading pause (e.g. 0.8s), and dispatches the selection (`Enter` or arrow navigation) in an asynchronous worker thread **without stalling the 30 FPS video frame rasterizer**:
+2. **Reactive UI Prompt Interception** (opt-in):
+   Dialog answering is off by default. Turn on the built-in permission and `[y/N]` handlers with
+   `environment.auto_approve_dialogs: true` (alias `environment.auto_approve`), or declare
+   your own trigger. The reactor waits `delay_before`, then sends the key from a worker thread
+   so the frame loop keeps running. At the end of the run TermReel prints every key it typed
+   (`⌨️  Screen triggers typed into the session N time(s): ...`), and the same list is returned in
+   `ScenarioReport.injections`.
+
+   Use `edge` so one dialog gets one answer. Without it a trigger is level-triggered: it
+   fires again every `cooldown` seconds while the text stays on screen and sends extra keys.
    ```yaml
+   environment:
+     auto_approve_dialogs: true      # built-in permission / [y/N] handlers
+
    triggers:
-     - on_match: "Requesting permission for:|Do you want to proceed\\?|\\[y/N\\]"
+     # A dialog: fire once when it appears. Re-arm when it disappears, or when
+     # a new match shows up below the answered one (the next dialog in
+     # scrolling output). A dialog that stays up is not answered again.
+     - on_match: "Requesting permission for:|Do you want to proceed\\?"
        action:
          type: "send_key"
          value: "Enter"
          delay_before: 0.8
          delay_after: 0.3
        once: false
-       cooldown: 1.5
+       edge: presence
+       max_firings: 15
+     # A line prompt: fire once per prompt that is still waiting for input
+     # (the match must be on the cursor row or the last non-blank line,
+     # with only whitespace/punctuation after it).
+     - on_match: "\\[y/N\\]"
+       action:
+         - {type: "type", value: "y", delay_before: 0.4}
+         - {type: "send_key", value: "Enter"}
+       once: false
+       edge: line
        max_firings: 15
    ```
+   `edge` accepts `presence` or `line`. `none`, `level` or leaving it out keeps the level-triggered
+   behaviour. Any other value is rejected when the manifest is validated.
 
 ---
 

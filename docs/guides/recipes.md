@@ -134,9 +134,9 @@ metadata:
 environment:
   resume: true
   preserve_workspace: true
+  auto_approve_dialogs: true   # opt-in: answer permission / [y/N] dialogs
 
 permissions:
-  auto_approve: true
   allow_commands: ["python3", "pytest", "git"]
   allow_tools: ["run_command", "write_to_file", "read_file"]
 

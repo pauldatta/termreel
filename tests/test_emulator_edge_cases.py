@@ -9,6 +9,8 @@ import unittest
 from termreel.emulator.state import TerminalState, CharCell
 from termreel.emulator.parser import ANSIParser
 from termreel.emulator.colors import truecolor_rgb
+from tests.test_emulator_differential import _compare
+from tests.tmux_oracle import tmux_available
 
 
 class TestCursorMovements(unittest.TestCase):
@@ -184,25 +186,36 @@ class TestEraseOperations(unittest.TestCase):
         self.assertEqual(self.state.get_line_text(2), "     56789")
         self.assertEqual(self.state.get_line_text(3), "0123456789")
 
+    # The old versions of the next two tests asserted that ED 2 homes the
+    # cursor and that ED 3 clears the visible screen. Neither is true in
+    # xterm or tmux: ED 2 leaves the cursor where it is and ED 3 only purges
+    # scrollback. They now check TermReel against a real tmux pane.
+    _GRID_BYTES = b"\r\n".join(b"0123456789" for _ in range(4))
+
+    @unittest.skipUnless(tmux_available(), "tmux is not installed")
     def test_erase_in_display_ed2_entire_screen(self):
-        """ED 2 (ESC [ 2 J): clear entire screen and reset cursor."""
-        self._populate_grid()
-        self.parser.feed("\x1b[2J")
-        self.assertEqual(self.state.get_rendered_text(), "")
-        self.assertEqual(self.state.cursor.row, 0)
-        self.assertEqual(self.state.cursor.col, 0)
+        """ED 2 (ESC [ 2 J): blank the screen; the cursor stays put (tmux-verified)."""
+        data = self._GRID_BYTES + b"\x1b[2;4H\x1b[2J"
+        _compare(self, data, cols=10, rows=4, label="[ED2]")
+        # And the concrete behaviour, so a regression in both is still caught.
+        state = TerminalState(rows=4, cols=10)
+        ANSIParser(state).feed(data)
+        self.assertEqual(state.get_rendered_text(), "")
+        self.assertEqual((state.cursor.row, state.cursor.col), (1, 3))
 
+    @unittest.skipUnless(tmux_available(), "tmux is not installed")
     def test_erase_in_display_ed3_clear_screen_and_scrollback(self):
-        """ED 3 (ESC [ 3 J): clear entire screen and purge scrollback history."""
-        self._populate_grid()
-        # Trigger scrollback by feeding lines past rows
-        for i in range(6):
-            self.parser.feed(f"\r\nExtra line {i}")
-        self.assertGreater(len(self.state.scrollback), 0)
-
-        self.parser.feed("\x1b[3J")
-        self.assertEqual(self.state.get_rendered_text(), "")
-        self.assertEqual(len(self.state.scrollback), 0)
+        """ED 3 (ESC [ 3 J): purge scrollback only; the screen is untouched (tmux-verified)."""
+        data = self._GRID_BYTES + b"".join(b"\r\nExtra line %d" % i for i in range(6))
+        state = TerminalState(rows=4, cols=10)
+        parser = ANSIParser(state)
+        parser.feed(data)
+        self.assertGreater(len(state.scrollback), 0)
+        before = state.get_rendered_text()
+        parser.feed(b"\x1b[3J")
+        self.assertEqual(len(state.scrollback), 0)
+        self.assertEqual(state.get_rendered_text(), before)
+        _compare(self, data + b"\x1b[3J", cols=10, rows=4, label="[ED3]")
 
 
 class TestLineAndCharacterOperations(unittest.TestCase):
@@ -497,23 +510,27 @@ class TestStateBoundaries(unittest.TestCase):
         line = state.get_line_text(0)
         self.assertEqual(line, "        abc")
 
+    @unittest.skipUnless(tmux_available(), "tmux is not installed")
     def test_wide_character_handling_and_auto_wrap(self):
-        """CJK and wide characters are stored accurately and wrap at col margin."""
+        """CJK characters take two cells and wrap as a unit (tmux-verified).
+
+        The previous version asserted one cell per CJK character, which no
+        real terminal does.
+        """
+        # 6 columns: three wide characters fill a row; the fourth wraps whole.
+        data = "北京欢迎你世界".encode()
+        _compare(self, data, cols=6, rows=3, label="[CJK wrap]")
         state = TerminalState(rows=3, cols=6)
-        parser = ANSIParser(state)
+        ANSIParser(state).feed(data)
+        self.assertEqual(state.get_line_text(0), "北京欢")
+        self.assertEqual(state.get_line_text(1), "迎你世")
+        self.assertEqual(state.get_line_text(2), "界")
+        # Odd width: a wide char that would straddle the margin wraps early.
+        _compare(self, "ab北京欢".encode(), cols=5, rows=3, label="[CJK straddle]")
 
-        # 4 CJK characters: each takes 1 cell in state grid
-        parser.feed("北京欢迎")
-        self.assertEqual(state.get_line_text(0), "北京欢迎")
-
-        # Adding 3 more chars causes wrap to next line
-        parser.feed("你世界")
-        self.assertEqual(state.get_line_text(0), "北京欢迎你世")
-        self.assertEqual(state.get_line_text(1), "界")
-
-        # Verify search and regex match wide characters
-        self.assertTrue(state.contains("欢迎"))
-        self.assertTrue(state.search_regex(r"北京\w+"))
+        # Search and regex still match wide characters.
+        self.assertTrue(state.contains("欢"))
+        self.assertTrue(state.search_regex(r"迎\w+"))
 
 
 if __name__ == "__main__":

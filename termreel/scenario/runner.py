@@ -3,7 +3,7 @@ Scenario runner orchestrating environment lifecycle, PTY supervision,
 keystroke injection, reactive triggers, and continuous video synthesis.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 import re
 import shutil
@@ -19,6 +19,8 @@ from termreel.telemetry.registry import SessionRegistry
 from termreel.telemetry.server import TelemetryServer
 from termreel.emulator.state import TerminalState
 from termreel.emulator.parser import ANSIParser
+from termreel.emulator.composite import composite_panes
+from termreel.emulator.serialize import serialize_screen
 from termreel.supervisor.base import BaseSupervisor
 from termreel.supervisor.factory import create_supervisor
 from termreel.supervisor.tmux_session import TmuxSupervisor
@@ -57,6 +59,12 @@ class ScenarioReport:
     conversation_id: Optional[str] = None
     workspace_dir: Optional[str] = None
     session_id: Optional[str] = None
+    # Keystrokes typed by screen triggers (auto-approve, auto-trust, custom
+    # triggers): [{"time", "trigger", "pattern", "keys"}, ...]
+    injections: List[Dict[str, Any]] = field(default_factory=list)
+    # Non-fatal teardown problems (poster, cleanup, ...) that did not stop
+    # the recording from being written.
+    teardown_errors: List[str] = field(default_factory=list)
 
 
 
@@ -146,6 +154,7 @@ class ScenarioRunner:
         self.session_id = uuid.uuid4().hex[:12]
         self.telemetry_registry = SessionRegistry()
         session_dir = os.path.join(self.telemetry_registry.directory, self.session_id)
+        self.telemetry_session_dir = session_dir
         socket_path = os.path.join(session_dir, "telemetry.sock")
         if len(socket_path) > 100:
             socket_path = f"/tmp/tr_{self.session_id}.sock"
@@ -261,6 +270,8 @@ class ScenarioRunner:
                     cooldown_seconds=tc.cooldown,
                     max_firings=max_c,
                     max_count=max_c,
+                    edge=getattr(tc, "edge", None),
+                    label=f"trigger:{tc.on_match[:40]}",
                 )
             )
 
@@ -270,8 +281,10 @@ class ScenarioRunner:
             if not has_trust_trigger:
                 self.monitor.add_trigger(create_trust_dialog_trigger(delay_before=0.4, delay_after=0.4))
 
-        # Auto-register interactive permission dialog triggers if enabled and not already configured
-        if self.manifest.environment.auto_approve_dialogs or self.manifest.environment.agy_auto_approve:
+        # Auto-register interactive permission dialog triggers only when asked
+        # to (environment.auto_approve_dialogs / auto_approve). These type into
+        # the session, so they are opt-in and every firing is reported.
+        if self.manifest.environment.auto_approve_dialogs:
             has_perm_trigger = any(
                 ("permission" in str(getattr(t, "pattern", "")).lower() or "proceed" in str(getattr(t, "pattern", "")).lower())
                 for t in self.monitor.triggers
@@ -390,35 +403,50 @@ class ScenarioRunner:
                     )
             self._frame_accumulator = 0.0
 
+    def _capture_tmux_frame(self) -> bool:
+        """
+        Poll every tmux pane and composite them into ``self.state``.
+
+        Returns True when the screen (content, layout, or cursor) changed.
+        """
+        panes = self.supervisor.capture_frame()
+        if not panes:
+            return False
+        key = tuple(
+            (p.pane_id, p.left, p.top, p.width, p.height, p.active,
+             p.cursor_x, p.cursor_y, p.cursor_visible, p.content)
+            for p in panes
+        )
+        if key == self._last_captured_ansi:
+            return False
+        self._last_captured_ansi = key
+        with self._lock:
+            composite_panes(self.state, panes)
+        return True
+
     def _capture_loop(self):
         """Continuous frame rasterization and video streaming loop."""
         frame_interval = 1.0 / float(self.fps)
+        last_cast_screen: Optional[str] = None
         while self._is_recording:
             t0 = time.time()
             try:
+                tmux_changed = False
                 if self.supervisor and self.supervisor.is_alive():
-                    # Capture screen
                     if isinstance(self.supervisor, TmuxSupervisor):
-                        raw_ansi = self.supervisor.capture_ansi()
-                        if raw_ansi:
-                            with self._lock:
-                                self.parser.feed_tmux_pane(raw_ansi)
-                            if self.asciicast and raw_ansi != self._last_captured_ansi:
-                                self.asciicast.record_output(raw_ansi)
-                                self._last_captured_ansi = raw_ansi
-                    else:
-                        # PtySupervisor was constructed with state=self.state,
-                        # so its single reader thread has already parsed the
-                        # child's bytes into the grid this loop renders, and
-                        # fed the cast via _on_pty_output. Nothing to poll.
-                        pass
+                        tmux_changed = self._capture_tmux_frame()
+                    # PtySupervisor was constructed with state=self.state, so
+                    # its reader thread has already parsed the child's bytes
+                    # into the grid and fed the cast via _on_pty_output.
 
                     # Evaluate reactive screen triggers asynchronously without blocking frame capture
                     self.monitor.evaluate_and_react(self.supervisor, async_action=True)
 
                 with self._lock:
-                    # Apply token/secret redactions
-                    self.redactor.apply_to_terminal_state(self.state)
+                    # Mask a copy. The live grid stays unmasked so the next
+                    # frame's masking starts from the real text (masking in
+                    # place re-matched its own replacements and grew them).
+                    snapshot = self.redactor.redacted_snapshot(self.state)
 
                     card = self._active_card
                     s_left = self._status_left
@@ -430,6 +458,17 @@ class ScenarioRunner:
                     else:
                         s_pill = self._status_pill
                     speedup = self._speedup_factor
+
+                if self.asciicast:
+                    if tmux_changed:
+                        # The tmux backend sees snapshots, not the byte
+                        # stream, so the cast gets a positioned full redraw
+                        # of the (already masked) composited screen.
+                        screen = serialize_screen(snapshot)
+                        if screen != last_cast_screen:
+                            self.asciicast.record_output(screen, already_redacted=True)
+                            last_cast_screen = screen
+                    self.asciicast.tick()
 
                 # Time dilation via frame decimation:
                 should_render = False
@@ -448,11 +487,16 @@ class ScenarioRunner:
                         s_left=s_left,
                         s_right=s_right,
                         s_pill=s_pill,
+                        term_state=snapshot,
                     )
 
             except Exception as e:
-                # Avoid breaking capture loop on minor frame jitter
-                pass
+                # Keep capturing through a bad frame, but say so once per
+                # distinct error instead of hiding it.
+                msg = f"{type(e).__name__}: {e}"
+                if msg != getattr(self, "_last_capture_error", None):
+                    self._last_capture_error = msg
+                    self._log(f"⚠️ frame capture error: {msg}")
 
             elapsed = time.time() - t0
             sleep_time = max(0.002, frame_interval - elapsed)
@@ -464,10 +508,14 @@ class ScenarioRunner:
         s_left: Optional[str] = None,
         s_right: Optional[str] = None,
         s_pill: str = "● LIVE TTY",
+        term_state: Optional[TerminalState] = None,
     ) -> Optional[bytes]:
         """Render frame with CairoTerminalRenderer, write to FFmpeg, and update telemetry metrics."""
+        if term_state is None:
+            with self._lock:
+                term_state = self.redactor.redacted_snapshot(self.state)
         frame_bytes = self.renderer.draw_frame(
-            term_state=self.state,
+            term_state=term_state,
             banner_card=card,
             status_left=s_left,
             status_right=s_right,
@@ -513,6 +561,8 @@ class ScenarioRunner:
                 renderer=self.telemetry_renderer,
                 metadata=self.telemetry_metadata,
                 registry=self.telemetry_registry,
+                session_dir=self.telemetry_session_dir,
+                redactor=self.redactor,
             )
             self.telemetry = self.telemetry_server
             self.telemetry_registry.register(self.telemetry_metadata)
@@ -574,44 +624,77 @@ class ScenarioRunner:
             self._log(f"❌ Scenario execution encountered error: {e}")
             raise
         finally:
+            teardown_errors: List[str] = []
+            encode_error: Optional[BaseException] = None
+
+            def _step(name: str, fn) -> None:
+                try:
+                    fn()
+                except Exception as exc:  # noqa: BLE001 - teardown must continue
+                    teardown_errors.append(f"{name}: {type(exc).__name__}: {exc}")
+                    self._log(f"⚠️ teardown step '{name}' failed: {exc}")
+
             # Tear down telemetry server and unregister session
             if self.telemetry:
                 status = "failed" if error_msg else "completed"
-                self.telemetry.stop(status=status)
+                _step("telemetry", lambda: self.telemetry.stop(status=status))
             if self.telemetry_registry:
-                self.telemetry_registry.unregister(self.session_id)
+                _step("registry", lambda: self.telemetry_registry.unregister(self.session_id))
 
             # Tear down capture loop and finalize encoding
             self._is_recording = False
             if self._capture_thread:
-                self._capture_thread.join(timeout=2.0)
+                _step("capture thread", lambda: self._capture_thread.join(timeout=2.0))
 
             # Wait for any active trigger actions to complete
-            self.monitor.wait_for_actions(timeout=2.0)
+            _step("trigger actions", lambda: self.monitor.wait_for_actions(timeout=2.0))
 
             if self.supervisor:
-                self.supervisor.terminate()
+                _step("supervisor", self.supervisor.terminate)
 
             if self.asciicast:
-                self.asciicast.close()
+                _step("asciicast", self.asciicast.close)
 
             if self.ffmpeg_pipe:
-                self.ffmpeg_pipe.close()
+                try:
+                    self.ffmpeg_pipe.close()
+                except Exception as exc:
+                    encode_error = exc
+                    teardown_errors.append(f"ffmpeg: {type(exc).__name__}: {exc}")
+                    self._log(f"❌ video encoding failed: {exc}")
 
             # Extract poster frame after video file is fully written and finalized
             poster_path = self.manifest.metadata.poster_output
-            if poster_path and self.ffmpeg_pipe and os.path.exists(self.output_file):
+            if poster_path and self.ffmpeg_pipe and encode_error is None and os.path.exists(self.output_file):
                 poster_full_path = os.path.abspath(poster_path)
-                if self.ffmpeg_pipe.extract_poster(poster_full_path, timestamp_sec=1.0):
-                    self._log(f"Extracted poster thumbnail -> {poster_full_path}")
 
-            self._cleanup_environment()
+                def _poster():
+                    if self.ffmpeg_pipe.extract_poster(poster_full_path, timestamp_sec=1.0):
+                        self._log(f"Extracted poster thumbnail -> {poster_full_path}")
+                    else:
+                        raise RuntimeError(f"could not extract poster to {poster_full_path}")
+
+                _step("poster", _poster)
+
+            _step("environment cleanup", self._cleanup_environment)
+            self._teardown_errors = teardown_errors
+
+            # A recording that could not be encoded is a failure even if the
+            # timeline ran; surface it unless another error is already
+            # propagating.
+            if encode_error is not None and error_msg is None:
+                raise encode_error
 
         duration = time.time() - start_time
         frame_count = self.ffmpeg_pipe.frame_count if self.ffmpeg_pipe else 0
         file_size = os.path.getsize(self.output_file) if os.path.exists(self.output_file) else 0
 
         self._log(f"✅ Finished recording: {self.output_file} ({frame_count} frames, {duration:.1f}s, {file_size / 1024:.1f} KB)")
+        injections = list(self.monitor.injections)
+        if injections:
+            self._log(f"⌨️  Screen triggers typed into the session {len(injections)} time(s):")
+            for inj in injections:
+                self._log(f"   +{inj['time'] - start_time:.2f}s  [{inj['trigger']}]  keys={inj['keys']!r}")
 
         return ScenarioReport(
             status="pass" if not error_msg else "error",
@@ -625,6 +708,8 @@ class ScenarioRunner:
             conversation_id=self.active_conversation_id,
             workspace_dir=self._work_dir,
             session_id=self.session_id,
+            injections=injections,
+            teardown_errors=list(getattr(self, "_teardown_errors", [])),
         )
 
     def _execute_type(self, params: Dict[str, Any]):

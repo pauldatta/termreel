@@ -57,10 +57,11 @@ class ScenarioGenerator:
         if spec.suggested_setup_commands:
             manifest_data["environment"]["setup_commands"] = spec.suggested_setup_commands
 
-        # Permissions
+        # Permissions: written to the agy settings allowlist. Typing answers
+        # into on-screen dialogs is separate and opt-in
+        # (environment.auto_approve_dialogs), so it is not enabled here.
         if spec.recommended_permissions:
             manifest_data["permissions"] = {
-                "auto_approve": True,
                 "allow_commands": spec.recommended_permissions,
                 "allow_tools": ["run_command", "write_to_file", "read_file", "grep_search"],
             }

@@ -22,8 +22,20 @@ DEFAULT_SECRET_PATTERNS: List[Pattern] = [
     # GitHub Personal Access Token (classic & fine-grained)
     re.compile(r"ghp_[a-zA-Z0-9]{30,45}"),
     re.compile(r"github_pat_[a-zA-Z0-9_]{60,90}"),
+    # GitHub OAuth, user-to-server, server-to-server and refresh tokens
+    re.compile(r"gh[ousr]_[a-zA-Z0-9]{30,}"),
+    # Anthropic API/admin keys (sk-ant-api03-..., sk-ant-admin01-...)
+    re.compile(r"sk-ant-[a-z]+[0-9]*-[A-Za-z0-9_\-]{20,}"),
+    # OpenAI project / service-account keys (sk-proj-..., sk-svcacct-...)
+    re.compile(r"sk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{20,}"),
     # OpenAI API Key
     re.compile(r"sk-[a-zA-Z0-9]{20,}"),
+    # Stripe secret and restricted keys
+    re.compile(r"(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"),
+    # Slack bot/app/user/refresh/legacy tokens
+    re.compile(r"xox[baprs]-[A-Za-z0-9\-]{10,}"),
+    # GitLab personal access token
+    re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
     # AWS Access Key ID
     re.compile(r"AKIA[0-9A-Z]{16}"),
     # Generic JWT Token
@@ -68,7 +80,13 @@ class PatternRule:
             self._compiled = self.pattern_str
             self.pattern_str = self.pattern_str.pattern
         else:
-            self._compiled = re.compile(self.pattern_str)
+            try:
+                self._compiled = re.compile(self.pattern_str)
+            except (re.error, TypeError) as exc:
+                from termreel.exceptions import MaskConfigError
+                raise MaskConfigError(
+                    f"Invalid mask pattern {self.pattern_str!r}: {exc}"
+                ) from exc
 
 
 @dataclass
@@ -87,7 +105,13 @@ class AnchorRule:
     _target_group: int = field(init=False, default=2, repr=False)
 
     def __post_init__(self):
-        self._compile_anchor()
+        try:
+            self._compile_anchor()
+        except re.error as exc:
+            from termreel.exceptions import MaskConfigError
+            raise MaskConfigError(
+                f"Invalid mask anchor match {self.match!r}: {exc}"
+            ) from exc
 
     def _compile_anchor(self):
         after_pat = re.escape(self.after) if self.after else None
@@ -145,21 +169,33 @@ def load_mask_config(path: Optional[str] = None) -> Dict[str, Any]:
     """
     Read mask and redaction rules from global configuration file.
     Merges both 'mask' and 'redactions' sections if both are present.
-    Returns empty dict if file is missing, empty, or unparseable.
+
+    Returns an empty dict only when the file does not exist or is empty.
+    A file that exists but cannot be read or parsed raises MaskConfigError:
+    silently dropping the rules would record the secrets they protect.
     """
+    from termreel.exceptions import MaskConfigError
+
     target = path if path is not None else get_global_config_path()
-    if not os.path.isfile(target):
+    if not os.path.exists(target):
         return {}
+    if not os.path.isfile(target):
+        raise MaskConfigError(f"Mask config {target} is not a regular file")
     try:
         import yaml
 
         with open(target, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-    except Exception:
-        return {}
+    except Exception as exc:
+        raise MaskConfigError(f"Cannot read mask config {target}: {exc}") from exc
 
-    if not isinstance(data, dict):
+    if data is None:
         return {}
+    if not isinstance(data, dict):
+        raise MaskConfigError(
+            f"Mask config {target} must be a mapping with 'mask' and/or 'redactions' keys, "
+            f"got {type(data).__name__}"
+        )
 
     combined: Dict[str, Any] = {}
 
@@ -469,18 +505,90 @@ class MaskEngine:
 
         return rule._compiled.sub(_repl, text)
 
-    def apply_to_terminal_state(self, state: TerminalState) -> None:
+    def redacted_snapshot(self, state: TerminalState) -> TerminalState:
         """
-        Sanitize characters in-place across the 2D TerminalState grid,
-        preserving formatting attributes and correctly shifting rows for
-        variable-length value substitutions.
+        Return a masked copy of ``state`` for rendering or telemetry.
+
+        The live grid is never modified. Earlier versions rewrote the live
+        grid in place every frame, so a replacement containing the original
+        text grew on every frame (``paul`` -> ``paul_demo`` -> ``paul_demo_demo``)
+        and a replacement of a different length shifted columns under the
+        application's cursor.
+
+        Matching runs on logical lines (rows joined across soft wraps), so a
+        token that wraps onto the next row is masked in full.
+        """
+        snap = state.snapshot(copy_inactive=False)
+        self.apply_to_terminal_state(snap, active_only=True)
+        return snap
+
+    def apply_to_terminal_state(self, state: TerminalState, active_only: bool = False) -> None:
+        """
+        Mask ``state`` in place.
+
+        Only call this on a copy (see :meth:`redacted_snapshot`). Applying it
+        repeatedly to a live grid re-masks already masked text. Rule
+        ``match_count`` values are not changed here: they count occurrences
+        in text passed to :meth:`redact_text`, not frames.
+
+        ``active_only`` masks just the visible buffer (the hidden buffer of a
+        ``snapshot(copy_inactive=False)`` is shared with the live state).
         """
         with state._lock:
-            # Apply to primary grid
-            self._apply_to_grid(state.primary_grid, state.rows, state.cols, state.default_fg, state.default_bg)
-            # Apply to alt grid if active
-            if state.in_alt_buffer:
-                self._apply_to_grid(state.alt_grid, state.rows, state.cols, state.default_fg, state.default_bg)
+            cursor = state.cursor
+            active_is_alt = state.in_alt_buffer
+            for grid, is_active in ((state.primary_grid, not active_is_alt), (state.alt_grid, active_is_alt)):
+                if active_only and not is_active:
+                    continue
+                self._apply_to_grid(
+                    grid, state.rows, state.cols, state.default_fg, state.default_bg,
+                    cursor=cursor if is_active else None,
+                )
+
+    def _collect_matches(self, text: str, count: bool = False) -> List[Tuple[int, int, str]]:
+        """
+        Non-overlapping (start, end, replacement) spans over ``text``.
+
+        With ``count=True`` each chosen span increments its rule's
+        ``match_count`` (used for text that is written out once, such as a
+        cast stream). Grid masking runs every frame and does not count.
+        """
+        matches: List[Tuple[int, int, str, Any]] = []
+        for anchor in self.anchors:
+            for m in anchor._compiled.finditer(text):
+                start = m.start(anchor._target_group)
+                end = m.end(anchor._target_group)
+                if anchor.span == "rest_of_line":
+                    stripped = text[start:end].rstrip(" ")
+                    end = start + len(stripped) if stripped else start
+                repl = anchor.replace if anchor.replace is not None else (self.mask_char * (end - start))
+                if end > start:
+                    matches.append((start, end, repl, anchor))
+        for val in self._sorted_values:
+            for m in val._compiled.finditer(text):
+                start, end = m.span()
+                repl = val.replace if val.replace is not None else (self.mask_char * (end - start))
+                matches.append((start, end, repl, val))
+        for pat in self.patterns:
+            for m in pat._compiled.finditer(text):
+                start, end = m.span()
+                if end <= start:
+                    continue
+                repl = pat.replace if pat.replace is not None else (self.mask_char * (end - start))
+                matches.append((start, end, repl, pat))
+        if not matches:
+            return []
+        # Earliest start wins; for equal starts the longest span wins.
+        matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+        chosen: List[Tuple[int, int, str]] = []
+        last_end = -1
+        for start, end, repl, rule in matches:
+            if start >= last_end:
+                chosen.append((start, end, repl))
+                last_end = end
+                if count:
+                    rule.match_count += 1
+        return chosen
 
     def _apply_to_grid(
         self,
@@ -489,100 +597,128 @@ class MaskEngine:
         cols: int,
         default_fg: RGBColor,
         default_bg: RGBColor,
+        cursor: Any = None,
     ) -> None:
-        for r in range(min(rows, len(grid))):
-            row_cells = grid[r]
-            line_str = "".join(c.char for c in row_cells)
+        from termreel.emulator.state import Row, char_width
 
-            # Collect matches across anchors, values, and patterns
-            matches = []  # List of tuples: (start, end, replacement, rule)
+        nrows = min(rows, len(grid))
+        r = 0
+        while r < nrows:
+            # A logical line: rows chained by the soft-wrap flag.
+            first = r
+            while r < nrows - 1 and getattr(grid[r], "wrapped", False):
+                r += 1
+            last = r
+            r += 1
 
-            # 1. Anchors
-            for anchor in self.anchors:
-                for m in anchor._compiled.finditer(line_str):
-                    start = m.start(anchor._target_group)
-                    end = m.end(anchor._target_group)
-                    if anchor.span == "rest_of_line":
-                        # Clamp to last non-space character in target
-                        raw_target = line_str[start:end]
-                        stripped = raw_target.rstrip(" ")
-                        end = start + len(stripped) if stripped else start
-                    repl = anchor.replace if anchor.replace is not None else (self.mask_char * (end - start))
-                    if end > start or (repl and end == start):
-                        matches.append((start, end, repl, anchor))
+            cells: List[CharCell] = []
+            for rr in range(first, last + 1):
+                row = grid[rr]
+                base_cells = getattr(row, "_unmasked_cells", None)
+                if base_cells is not None:
+                    row_slice = [c.copy() for c in base_cells[:cols]]
+                else:
+                    row_slice = list(row[:cols])
+                cells.extend(row_slice)
+                cells.extend(CharCell(char=" ", fg=default_fg, bg=default_bg) for _ in range(cols - len(row_slice)))
 
-            # 2. Values
-            for val in self._sorted_values:
-                for m in val._compiled.finditer(line_str):
-                    start, end = m.span()
-                    repl = val.replace if val.replace is not None else (self.mask_char * (end - start))
-                    matches.append((start, end, repl, val))
-
-            # 3. Patterns
-            for pat in self.patterns:
-                for m in pat._compiled.finditer(line_str):
-                    start, end = m.span()
-                    repl = pat.replace if pat.replace is not None else (self.mask_char * (end - start))
-                    matches.append((start, end, repl, pat))
-
-            if not matches:
+            # Text with a map from text offset to cell index. Wide-character
+            # placeholder cells ("") contribute no text.
+            pieces: List[str] = []
+            owner: List[int] = []
+            for idx, cell in enumerate(cells):
+                ch = cell.char
+                if not ch:
+                    continue
+                pieces.append(ch)
+                owner.extend([idx] * len(ch))
+            text = "".join(pieces)
+            if not text.strip():
+                continue
+            spans = self._collect_matches(text)
+            if not spans:
                 continue
 
-            # Sort matches by start position ascending, filter out overlapping matches
-            matches.sort(key=lambda item: item[0])
-            non_overlapping = []
-            last_end = -1
-            for start, end, repl, rule in matches:
-                if start >= last_end:
-                    non_overlapping.append((start, end, repl, rule))
-                    last_end = end
+            total = len(cells)
+            cell_spans = []
+            for start, end, repl in spans:
+                c_start = owner[start]
+                c_end = owner[end - 1] + 1
+                while c_end < total and cells[c_end].char == "":
+                    c_end += 1  # include the right half of a wide char
+                cell_spans.append((c_start, c_end, repl))
 
-            # Process matches right-to-left (descending start) so column shifts
-            # on the right do not affect column positions on the left
-            non_overlapping.sort(key=lambda item: item[0], reverse=True)
+            # Cursor as a linear offset within this logical line.
+            cur_pos = None
+            pending = False
+            if cursor is not None and first <= cursor.row <= last:
+                pending = cursor.col >= cols
+                cur_pos = (cursor.row - first) * cols + min(cursor.col, cols)
 
-            for start, end, repl, rule in non_overlapping:
-                rule.match_count += 1
+            new_cells: List[CharCell] = []
+            prev = 0
+            shift = 0
+            new_cur = cur_pos
+            for c_start, c_end, repl in cell_spans:
+                new_cells.extend(cells[prev:c_start])
+                ref = cells[c_start]
+                repl_cells: List[CharCell] = []
+                for ch in repl:
+                    w = char_width(ch)
+                    if w <= 0 and repl_cells:
+                        repl_cells[-1].char += ch
+                        continue
+                    base = ref.copy()
+                    base.char = ch
+                    repl_cells.append(base)
+                    if w == 2:
+                        filler = ref.copy()
+                        filler.char = ""
+                        repl_cells.append(filler)
+                new_cells.extend(repl_cells)
+                delta = len(repl_cells) - (c_end - c_start)
+                if cur_pos is not None:
+                    if cur_pos >= c_end:
+                        new_cur = cur_pos + shift + delta
+                    elif cur_pos > c_start:
+                        new_cur = c_start + shift + min(cur_pos - c_start, len(repl_cells))
+                shift += delta
+                prev = c_end
+            new_cells.extend(cells[prev:])
+            if cur_pos is not None and new_cur == cur_pos and shift and cur_pos >= prev:
+                new_cur = cur_pos + shift
 
-                # Reference style from first replaced character cell
-                ref_cell = row_cells[start] if start < len(row_cells) else None
-                fg = ref_cell.fg if ref_cell else default_fg
-                bg = ref_cell.bg if ref_cell else default_bg
-                bold = ref_cell.bold if ref_cell else False
-                dim = ref_cell.dim if ref_cell else False
-                italic = ref_cell.italic if ref_cell else False
-                underline = ref_cell.underline if ref_cell else False
-                strikethrough = ref_cell.strikethrough if ref_cell else False
-                reverse = ref_cell.reverse if ref_cell else False
-                blink = ref_cell.blink if ref_cell else False
-                hidden = ref_cell.hidden if ref_cell else False
+            # Re-flow into the same rows; clip or pad.
+            span_rows = last - first + 1
+            capacity = span_rows * cols
+            if len(new_cells) > capacity:
+                new_cells = new_cells[:capacity]
+                if new_cells and new_cells[-1].char and char_width(new_cells[-1].char[0]) == 2:
+                    blank = new_cells[-1].copy()
+                    blank.char = " "
+                    new_cells[-1] = blank
+            while len(new_cells) < capacity:
+                new_cells.append(CharCell(char=" ", fg=default_fg, bg=default_bg))
+            for i, rr in enumerate(range(first, last + 1)):
+                old_row = grid[rr]
+                wrapped = getattr(old_row, "wrapped", False)
+                unmasked = getattr(old_row, "_unmasked_cells", None)
+                if unmasked is None:
+                    unmasked = [c.copy() for c in old_row[:cols]]
+                new_row = Row(new_cells[i * cols:(i + 1) * cols], wrapped=wrapped)
+                new_row._unmasked_cells = unmasked
+                grid[rr] = new_row
 
-                repl_cells = [
-                    CharCell(
-                        char=ch,
-                        fg=fg,
-                        bg=bg,
-                        bold=bold,
-                        dim=dim,
-                        italic=italic,
-                        underline=underline,
-                        strikethrough=strikethrough,
-                        reverse=reverse,
-                        blink=blink,
-                        hidden=hidden,
-                    )
-                    for ch in repl
-                ]
-
-                # Splice replacement cells into row
-                new_row = row_cells[:start] + repl_cells + row_cells[end:]
-                if len(new_row) > cols:
-                    new_row = new_row[:cols]
-                while len(new_row) < cols:
-                    new_row.append(CharCell(char=" ", fg=default_fg, bg=default_bg))
-                row_cells = new_row
-
-            grid[r] = row_cells
+            if cur_pos is not None and new_cur is not None and new_cur != cur_pos:
+                new_cur = max(0, min(new_cur, capacity))
+                if pending and new_cur % cols == 0 and new_cur > 0:
+                    row_off, col = new_cur // cols - 1, cols
+                else:
+                    row_off, col = divmod(new_cur, cols)
+                    if row_off >= span_rows:
+                        row_off, col = span_rows - 1, cols - 1
+                cursor.row = first + row_off
+                cursor.col = col
 
     def get_verification_report(self) -> Dict[str, Any]:
         """

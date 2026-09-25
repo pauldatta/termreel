@@ -96,13 +96,13 @@ metadata:
 environment:
   create_temp_workspace: true
   auto_trust: true
+  auto_approve_dialogs: true   # opt-in: answer permission / [y/N] dialogs
   setup_commands:
     - "git init"
     - "echo 'def process(data): return data.strip()' > service.py"
     - "git add service.py && git commit -m 'Initial service'"
 
 permissions:
-  auto_approve: true
   allow_commands: ["python3", "pytest", "git"]
   allow_tools: ["run_command", "write_to_file", "read_file"]
 

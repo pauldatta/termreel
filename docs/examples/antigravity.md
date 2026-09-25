@@ -47,7 +47,6 @@ environment:
     - "git add app.py && git commit -m 'Initial commit with factorial implementation'"
 
 permissions:
-  auto_approve: true
   allow_commands: ["python3", "python3 app.py", "git", "pytest"]
   allow_tools: ["run_command", "write_to_file", "read_file", "grep_search"]
 
@@ -55,14 +54,16 @@ triggers:
   - on_match: "Do you trust the contents of this project\\?|Yes, I trust"
     action: "Enter"
     once: true
-  - on_match: "Requesting permission for:|Do you want to proceed\\?|\\[y/N\\]"
+  # edge: presence -> one Enter per dialog; re-armed once the dialog is gone
+  # or a new one appears below it.
+  - on_match: "Requesting permission for:|Do you want to proceed\\?"
     action:
       type: "send_key"
       value: "Enter"
       delay_before: 0.8
       delay_after: 0.3
     once: false
-    cooldown: 1.5
+    edge: presence
     max_firings: 15
 
 timeline:

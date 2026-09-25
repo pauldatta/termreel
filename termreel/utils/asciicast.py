@@ -58,7 +58,12 @@ class AsciicastRecorder:
         # PTY master, and a plain bytes.decode() per chunk mangles it.
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._last_flush = 0.0
+        self._last_ts = 0.0
         self._lock = threading.RLock()
+        self._stream = None
+        if self.redactor is not None and hasattr(self.redactor, "_collect_matches"):
+            from termreel.mask.stream import StreamRedactor
+            self._stream = StreamRedactor(self.redactor)
 
     def start(self):
         """Open file and write Asciinema v2 header."""
@@ -86,9 +91,19 @@ class AsciicastRecorder:
             return 0.0
         return max(0.0, time.time() - self.start_time)
 
-    def record_output(self, data: str):
-        """Record an stdout event."""
-        self.record_event("o", data)
+    def record_output(self, data: str, already_redacted: bool = False):
+        """
+        Record an stdout event.
+
+        ``already_redacted`` is for text built from a masked screen snapshot
+        (tmux-backend redraws). Running value rules over it again would
+        re-mask replacements that contain the original text.
+        """
+        if already_redacted:
+            self._flush_stream()
+            self._write_event("o", data)
+            return
+        self._record_stream(data)
 
     def record_output_bytes(self, data: bytes):
         """
@@ -102,27 +117,85 @@ class AsciicastRecorder:
         with self._lock:
             text = self._decoder.decode(data)
         if text:
-            self.record_event("o", text)
+            self._record_stream(text)
 
     def record_input(self, data: str):
         """Record an stdin event."""
         self.record_event("i", data)
 
+    def _record_stream(self, text: str) -> None:
+        if not self.file or self.start_time is None:
+            return
+        if self._stream is None:
+            if self.redactor is not None:
+                text = self.redactor.redact_text(text)
+            self._write_event("o", text)
+            return
+        with self._lock:
+            pieces = self._stream.feed(text, self.elapsed())
+        for ts, piece in pieces:
+            self._write_event("o", piece, ts=ts)
+
+    def _flush_stream(self) -> None:
+        if self._stream is None:
+            return
+        with self._lock:
+            pieces = self._stream.flush(self.elapsed())
+        for ts, piece in pieces:
+            self._write_event("o", piece, ts=ts)
+
+    def tick(self, idle: float = 0.25) -> None:
+        """
+        Release output held back for redaction once it has been idle for
+        ``idle`` seconds. Call this from the frame loop.
+        """
+        if self._stream is None:
+            return
+        with self._lock:
+            since = self._stream.held_since()
+        if since is not None and self.elapsed() - since >= idle:
+            self._flush_stream()
+
+    def flush(self) -> None:
+        """Release everything held back for redaction now."""
+        self._flush_stream()
+
+    def resync(self, screen: str) -> None:
+        """
+        Continue the stream from a known screen after a gap.
+
+        Used when output was deliberately not recorded (``live`` pause):
+        any partial UTF-8 sequence from before the gap is discarded, held
+        text is flushed, and ``screen`` (a full redraw built from a masked
+        snapshot) is written so a player shows exactly what is on screen.
+        """
+        with self._lock:
+            self._decoder.reset()
+        self._flush_stream()
+        self.record_output(screen, already_redacted=True)
+
     def record_event(self, event_type: str, data: str):
         """Record a generic event line: [elapsed_sec, type, data]."""
         if not self.file or self.start_time is None:
             return
+        if event_type == "o":
+            self._record_stream(data)
+            return
         if self.redactor is not None:
-            try:
-                data = self.redactor.redact_text(data)
-            except Exception:
-                pass
-        elapsed = round(self.elapsed(), 6)
-        line = json.dumps([elapsed, event_type, data])
+            data = self.redactor.redact_text(data)
+        self._write_event(event_type, data)
+
+    def _write_event(self, event_type: str, data: str, ts: Optional[float] = None) -> None:
+        if not data:
+            return
+        elapsed = round(self.elapsed() if ts is None else ts, 6)
         with self._lock:
             if not self.file:
                 return
-            self.file.write(line + "\n")
+            # Keep timestamps monotonic even when held text is released late.
+            elapsed = max(elapsed, self._last_ts)
+            self._last_ts = elapsed
+            self.file.write(json.dumps([elapsed, event_type, data]) + "\n")
             self.event_count += 1
             now = time.time()
             if self.flush_interval <= 0.0 or (now - self._last_flush) >= self.flush_interval:
@@ -130,7 +203,7 @@ class AsciicastRecorder:
                 self._last_flush = now
 
     def close(self):
-        """Flush the incremental decoder and close the asciicast file."""
+        """Flush the decoder and the redaction hold-back, then close the file."""
         with self._lock:
             if not self.file:
                 return
@@ -140,16 +213,13 @@ class AsciicastRecorder:
                 tail = self._decoder.decode(b"", final=True)
             except Exception:
                 tail = ""
-            if tail:
-                if self.redactor is not None:
-                    try:
-                        tail = self.redactor.redact_text(tail)
-                    except Exception:
-                        pass
-                self.file.write(json.dumps([round(self.elapsed(), 6), "o", tail]) + "\n")
-                self.event_count += 1
-            self.file.close()
-            self.file = None
+        if tail:
+            self._record_stream(tail)
+        self._flush_stream()
+        with self._lock:
+            if self.file:
+                self.file.close()
+                self.file = None
 
 
 class AsciicastPlayer:

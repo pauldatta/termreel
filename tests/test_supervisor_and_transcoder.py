@@ -236,10 +236,8 @@ class TestFFmpegPipe(unittest.TestCase):
         webm_cmd = webm_pipe._build_command()
         self.assertIn("libvpx-vp9", webm_cmd)
 
-        # Test GIF command building
-        gif_pipe = FFmpegPipe(os.path.join(self.test_dir, "test.gif"), 320, 240)
-        gif_cmd = gif_pipe._build_command()
-        self.assertTrue(any("palettegen" in arg for arg in gif_cmd))
+        # GIF output is verified by actually encoding one; see
+        # tests/test_pty_transcoder_real.py::TestTranscoder.
 
     def test_frame_writing_stderr_draining_and_transcode(self):
         """Test writing raw BGRA frames, stderr draining, and clean MP4 container finalization."""

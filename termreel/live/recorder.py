@@ -12,6 +12,7 @@ everything here follows from them:
    a lock and blocks on encoder backpressure; the keystroke path must not.
 """
 
+import contextlib
 import math
 import os
 import shutil
@@ -28,6 +29,7 @@ import cairo
 import fcntl
 
 from termreel.emulator.parser import ANSIParser
+from termreel.emulator.serialize import serialize_screen
 from termreel.emulator.state import TerminalState
 from termreel.exceptions import TermReelError
 from termreel.live.config import PrefixBinding
@@ -281,13 +283,28 @@ class LiveRecorder:
             view = view[written:]
 
     def _on_child_output(self, chunk: bytes) -> None:
+        # Operator mirroring only. The cast is written from _on_parsed, which
+        # runs under the supervisor lock so a pause/resume cannot interleave
+        # with a chunk being parsed.
         self._write_to_operator(chunk)
+
+    def _on_parsed(self, chunk: bytes) -> None:
+        """Called by PtySupervisor under its lock, after the chunk was parsed."""
+        if self._paused:
+            # Paused output must never reach the cast. resume() writes a
+            # redraw of the screen so the cast continues from the right state.
+            return
         recorder = self.asciicast
         if recorder is not None:
             try:
                 recorder.record_output_bytes(chunk)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._note_cast_error(exc)
+
+    def _note_cast_error(self, exc: Exception) -> None:
+        if not getattr(self, "_cast_error_logged", False):
+            self._cast_error_logged = True
+            self._log(f"Cast recording error: {type(exc).__name__}: {exc}")
 
     def _set_terminal_title(self, text: str) -> None:
         try:
@@ -363,31 +380,54 @@ class LiveRecorder:
     def paused(self) -> bool:
         return self._paused
 
+    def _supervisor_lock(self):
+        sup = self.supervisor
+        lock = getattr(sup, "_lock", None) if sup is not None else None
+        return lock if lock is not None else contextlib.nullcontext()
+
     def pause(self) -> None:
-        """Stop writing frames. The child keeps running."""
-        with self._state_lock:
-            if self._paused:
-                return
-            self._paused = True
-            self._pause_started_at = time.monotonic()
+        """Stop writing frames and cast events. The child keeps running."""
+        with self._supervisor_lock():
+            with self._state_lock:
+                if self._paused:
+                    return
+                self._paused = True
+                self._pause_started_at = time.monotonic()
+            # Release anything the stream redactor was holding back, so the
+            # pre-pause output lands before the cut rather than after it.
+            if self.asciicast is not None:
+                try:
+                    self.asciicast.flush()
+                except Exception as exc:
+                    self._note_cast_error(exc)
         self._set_terminal_title("⏸ PAUSED – termreel")
         self._log("Paused. Nothing is being recorded.")
 
     def resume(self) -> None:
         """Resume writing frames, queueing a crossfade over the cut."""
-        with self._state_lock:
-            if not self._paused:
-                return
-            self._paused = False
-            if self._pause_started_at is not None:
-                self.paused_seconds += time.monotonic() - self._pause_started_at
-                self._pause_started_at = None
-            if self.crossfade > 0 and self._last_frame is not None:
-                # Handed to the frame thread. Blending here would block the
-                # keystroke path behind an 8 MB composite.
-                self._pending_transition = PendingTransition(
-                    from_frame=self._last_frame, duration=self.crossfade
-                )
+        # Held across the unpause and the snapshot so that no chunk can be
+        # parsed between them: every byte after the redraw is recorded, and
+        # none of the paused output is.
+        with self._supervisor_lock():
+            with self._state_lock:
+                if not self._paused:
+                    return
+                self._paused = False
+                if self._pause_started_at is not None:
+                    self.paused_seconds += time.monotonic() - self._pause_started_at
+                    self._pause_started_at = None
+                if self.crossfade > 0 and self._last_frame is not None:
+                    # Handed to the frame thread. Blending here would block the
+                    # keystroke path behind an 8 MB composite.
+                    self._pending_transition = PendingTransition(
+                        from_frame=self._last_frame, duration=self.crossfade
+                    )
+            if self.asciicast is not None:
+                try:
+                    snap = self.redactor.redacted_snapshot(self.state)
+                    self.asciicast.resync(serialize_screen(snap))
+                except Exception as exc:
+                    self._note_cast_error(exc)
         self._set_terminal_title("● REC – termreel")
         self._log("Recording.")
 
@@ -456,10 +496,9 @@ class LiveRecorder:
     # ----------------------------------------------------------- frame thread
 
     def _render_frame(self) -> bytes:
-        with self.state._lock:
-            self.redactor.apply_to_terminal_state(self.state)
+        snap = self.redactor.redacted_snapshot(self.state)
         return self.renderer.draw_frame(
-            term_state=self.state,
+            term_state=snap,
             status_pill=self.status_pill(),
             status_color=self.status_color(),
             status_left=f"{self.title} | {self.cols}x{self.rows} | UTF-8",
@@ -538,6 +577,12 @@ class LiveRecorder:
                 except Exception as exc:
                     self._log(f"Resize failed: {type(exc).__name__}: {exc}")
 
+            if self.asciicast is not None:
+                try:
+                    self.asciicast.tick()
+                except Exception as exc:
+                    self._note_cast_error(exc)
+
             with self._state_lock:
                 if self._paused:
                     continue
@@ -596,6 +641,8 @@ class LiveRecorder:
                 metadata=metadata,
                 registry=self.telemetry_registry,
                 controller=self,
+                session_dir=session_dir,
+                redactor=self.redactor,
             )
             self.telemetry_registry.register(metadata)
             self.telemetry.start()
@@ -616,8 +663,8 @@ class LiveRecorder:
         extension = os.path.splitext(self.output_file)[1].lower()
         if extension == ".gif":
             self._log(
-                "Warning: .gif output buffers the whole stream through a palettegen "
-                "filtergraph, so nothing is written until you stop. Prefer .mp4."
+                "Note: .gif is encoded in a second pass when you stop (capped at "
+                "15fps and 960px wide); stopping takes a few seconds. Prefer .mp4."
             )
         elif extension not in (".mp4", ".webm", ".mov", ".mkv"):
             self._log(f"Unrecognised output extension '{extension}'; encoding as H.264 anyway.")
@@ -668,6 +715,11 @@ class LiveRecorder:
                 state=self.state,
                 parser=self.parser,
                 on_output=self._on_child_output,
+                on_parsed=self._on_parsed,
+                # The child's output is mirrored to the operator's real
+                # terminal, which answers DSR/DA itself; replying here too
+                # would hand the child two answers.
+                respond_to_queries=False,
             )
             self.supervisor.start()
             # Silent here: the screen is cleared a few lines below, so any

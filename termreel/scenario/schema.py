@@ -46,7 +46,7 @@ if PYDANTIC_AVAILABLE:
         create_temp_workspace: bool = False
         temp_workspace_prefix: str = "termreel_ws_"
         auto_trust: bool = True
-        auto_approve_dialogs: bool = True
+        auto_approve_dialogs: bool = False
         setup_commands: List[str] = Field(default_factory=list)
         cleanup_commands: List[str] = Field(default_factory=list)
         hooks: Optional[Union[List[Any], Dict[str, Any]]] = None
@@ -70,6 +70,7 @@ if PYDANTIC_AVAILABLE:
         max_count: Optional[int] = None
         delay_before: float = 0.0
         delay_after: float = 0.3
+        edge: Optional[str] = None
 
         def model_post_init(self, __context: Any) -> None:
             if self.max_count is not None:
@@ -160,7 +161,7 @@ else:
         create_temp_workspace: bool = False
         temp_workspace_prefix: str = "termreel_ws_"
         auto_trust: bool = True
-        auto_approve_dialogs: bool = True
+        auto_approve_dialogs: bool = False
         setup_commands: List[str] = field(default_factory=list)
         cleanup_commands: List[str] = field(default_factory=list)
         hooks: Optional[Union[List[Any], Dict[str, Any]]] = None
@@ -185,6 +186,7 @@ else:
         max_count: Optional[int] = None
         delay_before: float = 0.0
         delay_after: float = 0.3
+        edge: Optional[str] = None
 
         def __post_init__(self):
             if self.max_count is not None:
@@ -281,6 +283,126 @@ VALID_ACTIONS = {
 }
 
 
+# Keys parse_manifest_dict actually reads. Anything else in these mappings is
+# dropped, so in strict mode (the default for YAML files) it is an error
+# instead of a silent fallback to defaults.
+TOP_LEVEL_KEYS = {
+    "version", "metadata", "environment", "redactions", "mask", "triggers", "timeline",
+    # Legacy top-level spellings that parse_manifest_dict still honours.
+    "theme", "fps", "cols", "rows", "dimensions", "permissions", "settings",
+    "auto_approve_dialogs", "resume", "conversation_id", "preserve_workspace",
+    "workspace_path",
+}
+METADATA_KEYS = {
+    "title", "subtitle", "output", "resolution", "fps", "theme", "font", "font_size",
+    "crf", "preset", "cast_output", "poster_output", "statusbar_left", "statusbar_right",
+    "cols", "rows", "dimensions",
+}
+ENVIRONMENT_KEYS = {
+    "cwd", "env", "create_temp_workspace", "temp_workspace_prefix", "auto_trust",
+    "auto_approve_dialogs", "auto_approve", "setup_commands", "cleanup_commands", "hooks",
+    "agy_hooks", "agy_auto_approve", "agy_event_bridge", "agy_custom_policy",
+    "permissions", "settings", "resume", "conversation_id", "preserve_workspace",
+    "workspace_path",
+}
+TRIGGER_KEYS = {
+    "on_match", "pattern", "match", "action", "once", "cooldown", "max_count",
+    "max_firings", "delay_before", "delay_after", "delay", "edge",
+}
+# Union of every step parameter the runner reads. Step parameters are only
+# rejected when they are unknown *and* close to one of these (a likely typo
+# such as ``txt`` for ``text``), because handlers read parameters in many
+# places and an exhaustive per-step whitelist would reject valid scenarios.
+STEP_PARAM_KEYS = {
+    "action", "busy_regex", "choice", "collapse_newlines", "command", "confirm",
+    "confirm_key", "contains", "content", "conversation_id", "decision", "delay",
+    "delay_after", "delay_before", "delay_between", "desc", "direction", "dismiss_key",
+    "display_duration", "duration", "env", "event", "event_type", "factor",
+    "fail_on_timeout", "file", "fps", "idle_regex", "jitter", "key", "keys", "left",
+    "multiline", "negate", "not_contains", "on_fail", "open_command", "open_key",
+    "output", "pane_index", "path", "pattern", "pause", "pause_after", "percent", "pill",
+    "prompt_pattern", "prompt_timeout", "reading_pause", "resume", "right", "scope",
+    "seconds", "send_key", "speed", "speedup", "steps", "strict", "tag", "text",
+    "timeout", "times", "title", "tool", "tool_name", "typos", "value", "wait_for_idle",
+    "wait_for_prompt", "wait_for_render", "commands", "indicator", "assert", "assert_output",
+}
+# Step parameters that are regular expressions and must compile.
+STEP_REGEX_KEYS = ("pattern", "idle_regex", "busy_regex", "prompt_pattern", "wait_for_render")
+
+
+def _suggest(key: str, known) -> str:
+    import difflib
+    close = difflib.get_close_matches(str(key), sorted(known), n=1, cutoff=0.6)
+    return f" Did you mean '{close[0]}'?" if close else ""
+
+
+def _check_keys(mapping: Dict[str, Any], known, where: str, strict: bool) -> None:
+    if not strict:
+        return
+    unknown = [k for k in mapping if k not in known]
+    if not unknown:
+        return
+    key = unknown[0]
+    raise ScenarioValidationError(
+        f"Unknown key '{key}' in {where}.{_suggest(key, known)} "
+        f"Valid keys: {', '.join(sorted(known))}"
+    )
+
+
+def _check_step_params(params: Dict[str, Any], step_key: str, idx: int, strict: bool) -> None:
+    import difflib
+    for k, v in params.items():
+        if strict and k not in STEP_PARAM_KEYS:
+            close = difflib.get_close_matches(str(k), sorted(STEP_PARAM_KEYS), n=1, cutoff=0.75)
+            if close:
+                raise ScenarioValidationError(
+                    f"Unknown parameter '{k}' in '{step_key}' step {idx + 1}. Did you mean '{close[0]}'?"
+                )
+        regex_keys = STEP_REGEX_KEYS + (("value",) if step_key in ("wait_for_text", "wait") else ())
+        if k in regex_keys and isinstance(v, str):
+            try:
+                re.compile(v)
+            except re.error as e:
+                raise ScenarioValidationError(
+                    f"Invalid regex in '{step_key}' step {idx + 1} parameter '{k}': {v!r}: {e}"
+                )
+
+
+
+def _validate_step_keys(step_key: str, params: Dict[str, Any], idx: int) -> None:
+    """Reject key specs neither backend can send, at load time."""
+    from termreel.exceptions import KeySpecError
+    from termreel.utils.keystrokes import parse_key_spec
+
+    specs: List[Any] = []
+    if step_key in ("send_key", "key", "shortcut"):
+        specs.append(params.get("key") or params.get("value"))
+    elif step_key in ("send_keys", "keys"):
+        keys_list = params.get("keys", params.get("value", []))
+        if isinstance(keys_list, str):
+            keys_list = [k.strip() for k in keys_list.split(",") if k.strip()]
+        if not isinstance(keys_list, list):
+            raise ScenarioValidationError(
+                f"Invalid '{step_key}' step {idx + 1}: expected a list of keys, got {keys_list!r}"
+            )
+        specs.extend(keys_list)
+    elif step_key == "select_choice":
+        specs.append(params.get("direction", "Down"))
+        specs.append(params.get("confirm_key", "Enter"))
+    elif step_key == "inspect_modal":
+        specs.append(params.get("dismiss_key", "Escape"))
+        if params.get("open_key"):
+            specs.append(params.get("open_key"))
+    if step_key in ("type",) and params.get("send_key"):
+        specs.append(params.get("send_key"))
+    for spec in specs:
+        if spec is None:
+            continue
+        try:
+            parse_key_spec(str(spec))
+        except KeySpecError as e:
+            raise ScenarioValidationError(f"Invalid key in '{step_key}' step {idx + 1}: {e}")
+
 
 def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioManifest:
     """Parse dictionary data into validated ScenarioManifest."""
@@ -294,6 +416,7 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
             raise ScenarioValidationError("Missing mandatory field: 'version'")
         if "timeline" not in data or data["timeline"] is None:
             raise ScenarioValidationError("Missing mandatory field: 'timeline'")
+    _check_keys(data, TOP_LEVEL_KEYS, "the scenario root", strict)
 
     timeline_data = data.get("timeline")
     if timeline_data is None:
@@ -308,6 +431,7 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
         raise ScenarioValidationError(
             f"Invalid 'metadata': expected a dictionary, got {type(meta_dict).__name__}"
         )
+    _check_keys(meta_dict, METADATA_KEYS, "'metadata'", strict)
 
     # Validate Theme
     theme_val = meta_dict.get("theme", data.get("theme", "catppuccin-mocha"))
@@ -403,13 +527,18 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
     env_dict = data.get("environment", {})
     if not isinstance(env_dict, dict):
         raise ScenarioValidationError(f"Invalid 'environment': expected dictionary, got {type(env_dict).__name__}")
+    _check_keys(env_dict, ENVIRONMENT_KEYS, "'environment'", strict)
 
     perms = env_dict.get("permissions") if "permissions" in env_dict else data.get("permissions")
     settings_cfg = env_dict.get("settings") if "settings" in env_dict else data.get("settings")
 
+    # Typing into the session on TermReel's own initiative is opt-in.
+    # ``auto_approve`` is accepted as an alias because the docs used it.
+    # ``agy_auto_approve`` only controls the agy hook policy; it used to turn
+    # screen auto-approve on as a side effect.
     auto_dialogs = env_dict.get(
         "auto_approve_dialogs",
-        env_dict.get("agy_auto_approve", data.get("auto_approve_dialogs", True))
+        env_dict.get("auto_approve", data.get("auto_approve_dialogs", False))
     )
 
     environment = ScenarioEnvironment(
@@ -442,6 +571,17 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
     if mask is not None and not isinstance(mask, (list, dict)):
         raise ScenarioValidationError(f"Invalid 'mask': expected list or dict, got {type(mask).__name__}")
 
+    if redactions or mask:
+        # Build the scenario's own rules now so a bad regex fails validation
+        # instead of failing (closed) only when recording starts.
+        from termreel.exceptions import MaskConfigError
+        from termreel.mask.engine import MaskEngine
+        try:
+            MaskEngine.create(load_global=False, use_default_patterns=False,
+                              redactions=redactions, mask=mask)
+        except MaskConfigError as exc:
+            raise ScenarioValidationError(str(exc)) from exc
+
     triggers_data = data.get("triggers", [])
     if not isinstance(triggers_data, list):
         raise ScenarioValidationError(f"Invalid 'triggers': expected list, got {type(triggers_data).__name__}")
@@ -450,6 +590,7 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
     for t in triggers_data:
         if not isinstance(t, dict):
             raise ScenarioValidationError(f"Invalid trigger format: expected dictionary, got {type(t).__name__}")
+        _check_keys(t, TRIGGER_KEYS, f"trigger {len(triggers) + 1}", strict)
         pat = t.get("on_match") or t.get("pattern") or t.get("match")
         if pat is None or not str(pat).strip():
             raise ScenarioValidationError(f"Trigger missing regex pattern: {t}")
@@ -468,6 +609,16 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
         else:
             once = (count_val == 1)
 
+        edge = t.get("edge")
+        if edge is not None:
+            edge = str(edge).strip().lower()
+            if edge in ("", "none", "level"):
+                edge = None
+            elif edge not in ("presence", "line"):
+                raise ScenarioValidationError(
+                    f"Invalid trigger edge {t.get('edge')!r}: use 'presence', 'line' or omit it"
+                )
+
         triggers.append(
             TriggerConfig(
                 on_match=str(pat),
@@ -478,6 +629,7 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
                 max_count=count_val,
                 delay_before=float(t.get("delay_before", 0.0)),
                 delay_after=float(t.get("delay_after", t.get("delay", 0.3))),
+                edge=edge,
             )
         )
 
@@ -493,7 +645,7 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
         for step_key, step_val in item.items():
             if step_key not in VALID_ACTIONS:
                 raise ScenarioValidationError(
-                    f"Unknown timeline step action: '{step_key}' at step {idx + 1}. Supported actions: {', '.join(sorted(VALID_ACTIONS))}"
+                    f"Unknown timeline step action: '{step_key}' at step {idx + 1}.{_suggest(step_key, VALID_ACTIONS)} Supported actions: {', '.join(sorted(VALID_ACTIONS))}"
                 )
 
             # Check numeric duration / timeout parameters for negative values
@@ -609,10 +761,15 @@ def parse_manifest_dict(data: Dict[str, Any], strict: bool = False) -> ScenarioM
             elif isinstance(step_val, dict):
                 params = step_val
             elif isinstance(step_val, list):
-                params = {"commands": step_val}
+                if step_key in ("send_keys", "keys"):
+                    params = {"keys": step_val}
+                else:
+                    params = {"commands": step_val}
             else:
                 params = {"value": step_val}
-
+            if isinstance(params, dict):
+                _check_step_params(params, step_key, idx, strict)
+                _validate_step_keys(step_key, params, idx)
 
             timeline.append(TimelineStep(step_type=step_key, params=params))
 

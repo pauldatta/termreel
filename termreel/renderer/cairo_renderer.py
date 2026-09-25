@@ -73,10 +73,12 @@ def pixels_for_grid(
     font_size: float = 14.5,
 ) -> Tuple[int, int]:
     """
-    Smallest canvas that yields exactly `cols` x `rows`.
+    Smallest even-sized canvas that yields exactly `cols` x `rows`.
 
     Inverse of grid_for_pixels: feeding this result back through
-    grid_for_pixels returns the same grid.
+    grid_for_pixels returns the same grid. Both dimensions are rounded up to
+    even numbers because H.264/VP9 with yuv420p chroma subsampling cannot
+    encode odd sizes (81x24 used to give 827x606 and fail in FFmpeg).
     """
     cols = max(10, int(cols))
     rows = max(5, int(rows))
@@ -84,6 +86,8 @@ def pixels_for_grid(
     h_overhead, v_overhead = _chrome_overhead()
     width = int(math.ceil(cols * char_width) + h_overhead + _GRID_SLACK_PX)
     height = int(math.ceil(rows * line_height) + v_overhead + _GRID_SLACK_PX)
+    width += width % 2
+    height += height % 2
     return width, height
 
 
@@ -301,7 +305,9 @@ class CairoTerminalRenderer:
             # 5. Cursor Rendering
             if term_state.cursor_visible and cursor_pulse > 0.05:
                 cur_r = term_state.cursor_row
-                cur_c = term_state.cursor_col
+                # Column == cols is the pending-wrap position; terminals show
+                # the cursor on the last column there.
+                cur_c = min(term_state.cursor_col, self.cols - 1)
                 if cur_r < self.rows and cur_c < self.cols:
                     cur_x = self.term_x + (cur_c * self.char_width)
                     cur_y = self.term_y + (cur_r * self.line_height) + 2.0
@@ -327,4 +333,7 @@ class CairoTerminalRenderer:
                 titlebar_h=self.titlebar_h,
             )
 
+        # Cairo may still hold pending drawing operations; get_data() alone
+        # does not guarantee they have reached the pixel buffer.
+        self.surface.flush()
         return bytes(self.surface.get_data())

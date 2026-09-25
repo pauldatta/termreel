@@ -351,56 +351,10 @@ class TestAssertionGateFeature(unittest.TestCase):
             runner._execute_step(step_fail, 1)
 
 
-class TestTmuxPaneOperations(unittest.TestCase):
-    """Test multi-window and split-pane tmux operations."""
-
-    @patch("subprocess.run")
-    def test_tmux_split_pane(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        sup = TmuxSupervisor(command="bash", session_name="test_session")
-        sup._started = True
-
-        # Horizontal split
-        sup.split_pane(direction="horizontal", percent=40, command="tail -f log.txt")
-        mock_run.assert_called_with(
-            ["tmux", "split-window", "-t", "test_session", "-h", "-p", "40", "tail -f log.txt"],
-            capture_output=True,
-            text=True,
-        )
-
-        # Vertical split
-        sup.split_pane(direction="vertical", percent=50)
-        mock_run.assert_called_with(
-            ["tmux", "split-window", "-t", "test_session", "-v", "-p", "50"],
-            capture_output=True,
-            text=True,
-        )
-
-    @patch("subprocess.run")
-    def test_tmux_select_pane(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        sup = TmuxSupervisor(command="bash", session_name="test_session")
-        sup._started = True
-
-        sup.select_pane(pane_index=1)
-        mock_run.assert_called_with(
-            ["tmux", "select-pane", "-t", "test_session:0.1"],
-            capture_output=True,
-            text=True,
-        )
-
-    @patch("subprocess.run")
-    def test_tmux_close_pane(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        sup = TmuxSupervisor(command="bash", session_name="test_session")
-        sup._started = True
-
-        sup.close_pane(pane_index=2)
-        mock_run.assert_called_with(
-            ["tmux", "kill-pane", "-t", "test_session:0.2"],
-            capture_output=True,
-            text=True,
-        )
+# Split/select/close are tested against a real private tmux server in
+# tests/test_tmux_backend_real.py. The mock-based tests that lived here only
+# asserted the argv handed to a patched subprocess.run, including a
+# hard-coded ``session:0.N`` target that was wrong under pane-base-index 1.
 
 
 class TestVertexAIAuditSupport(unittest.TestCase):

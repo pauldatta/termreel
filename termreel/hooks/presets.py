@@ -384,13 +384,15 @@ def create_agy_settings_config(
                 if rule and rule not in allow_rules:
                     allow_rules.append(rule)
 
-        for cmd in permissions.get("allowed_commands", permissions.get("commands", [])):
+        # allow_commands / allow_tools are the spellings the docs and the
+        # scaffold used; they were silently ignored before.
+        for cmd in permissions.get("allowed_commands", permissions.get("allow_commands", permissions.get("commands", []))):
             if isinstance(cmd, str):
                 rule = f"command({cmd.strip()})"
                 if rule not in allow_rules:
                     allow_rules.append(rule)
 
-        for t in permissions.get("allowed_tools", permissions.get("tools", [])):
+        for t in permissions.get("allowed_tools", permissions.get("allow_tools", permissions.get("tools", []))):
             if isinstance(t, str):
                 rule = normalize_permission_string(t.strip())
                 if rule not in allow_rules:

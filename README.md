@@ -6,7 +6,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![uv](https://img.shields.io/badge/managed%20by-uv-261230.svg)](https://astral.sh/uv)
 
-**TermReel** (`termreel` / `reccli`) is a standalone, headless CLI recording harness and deterministic video synthesis engine. It drives interactive CLI tools, TUIs, and autonomous AI coding agents (`agy`, `git`, `gcloud`, `gh`, `kubectl`, `vim`, etc.) inside real pseudo-terminals (PTY/tmux), injects natural human keystrokes, reacts to live screen events, and streams pixel-perfect H.264 MP4/WebM videos, animated GIFs, and Asciinema v2 (`.cast`) event streams directly into FFmpeg with **zero intermediate disk I/O**.
+**TermReel** (`termreel` / `reccli`) is a standalone, headless CLI recording harness and deterministic video synthesis engine. It drives interactive CLI tools, TUIs, and autonomous AI coding agents (`agy`, `git`, `gcloud`, `gh`, `kubectl`, `vim`, etc.) inside real pseudo-terminals (PTY/tmux), injects natural human keystrokes, reacts to live screen events, and streams pixel-perfect H.264 MP4/WebM videos and Asciinema v2 (`.cast`) event streams directly into FFmpeg with **zero intermediate disk I/O**. Animated GIFs use a two-pass palette encode (lossless temp file, capped at 15 fps / 960 px) so long GIFs do not exhaust memory.
 
 ---
 

@@ -8,11 +8,12 @@ import fcntl
 import termios
 import struct
 import select
+import shutil
 import signal
 import subprocess
 import threading
 import time
-from typing import Optional, Dict, Union, Any, Pattern, Callable
+from typing import Optional, Dict, List, Union, Any, Pattern, Callable
 from termreel.supervisor.base import BaseSupervisor
 from termreel.emulator.state import TerminalState
 from termreel.emulator.parser import ANSIParser
@@ -78,6 +79,61 @@ def _pty_child_preexec() -> None:
         pass
 
 
+def _session_members(sid: int) -> List[int]:
+    """Pids whose session id is ``sid`` (excluding this process)."""
+    me = os.getpid()
+    pids: List[int] = []
+    if os.path.isdir("/proc/self"):
+        for name in os.listdir("/proc"):
+            if not name.isdigit():
+                continue
+            try:
+                with open(f"/proc/{name}/stat", "rb") as fh:
+                    stat = fh.read().decode("utf-8", "replace")
+            except OSError:
+                continue
+            # comm (field 2) may contain spaces/parens: split after the last ')'.
+            fields = stat[stat.rfind(")") + 2:].split()
+            if len(fields) > 3 and fields[3] == str(sid):
+                pid = int(name)
+                if pid != me:
+                    pids.append(pid)
+        return pids
+    pgrep = shutil.which("pgrep")
+    if pgrep:
+        try:
+            res = subprocess.run([pgrep, "-s", str(sid)], capture_output=True, text=True, timeout=5)
+            pids = [int(p) for p in res.stdout.split() if p.isdigit() and int(p) != me]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return pids
+
+
+def _kill_session(sid: int, grace: float = 1.0) -> None:
+    """SIGTERM, then SIGKILL, every process still in session ``sid``."""
+    if sid <= 1 or sid == os.getsid(0):
+        return
+    members = _session_members(sid)
+    if not members:
+        return
+    for pid in members:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        members = _session_members(sid)
+        if not members:
+            return
+        time.sleep(0.05)
+    for pid in members:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
 class PtySupervisor(BaseSupervisor):
     """
     Direct POSIX PTY supervisor using openpty.
@@ -94,6 +150,8 @@ class PtySupervisor(BaseSupervisor):
         state: Optional[TerminalState] = None,
         parser: Optional[ANSIParser] = None,
         on_output: Optional[Callable[[bytes], None]] = None,
+        on_parsed: Optional[Callable[[bytes], None]] = None,
+        respond_to_queries: bool = True,
     ):
         self.command = command
         self.cwd = os.path.abspath(cwd) if cwd else os.getcwd()
@@ -115,16 +173,91 @@ class PtySupervisor(BaseSupervisor):
             self.state = state if state is not None else TerminalState(rows=rows, cols=cols)
             self.parser = ANSIParser(self.state)
 
+        # Programs query the terminal (cursor position report ``CSI 6n``,
+        # device attributes ``CSI c``) and some block until they get an
+        # answer: crossterm/ratatui inline viewports, readline's cursor
+        # probes. Nothing else is attached to this PTY, so the supervisor has
+        # to answer. ``termreel live`` passes False because the operator's
+        # real terminal sees the mirrored query and answers it itself; a
+        # second answer would be typed into the program as garbage.
+        if respond_to_queries and self.parser.responder is None:
+            self.parser.responder = self._answer_query
+
         # Mirror hook for raw master-fd bytes. The PTY master is a
         # single-consumer stream, so anything that needs to see the child's
         # output (a live passthrough tty, an asciicast log) must hook here
-        # rather than spawning a second os.read() loop.
+        # rather than spawning a second os.read() loop. Runs before parsing,
+        # outside the lock.
         self.on_output: Optional[Callable[[bytes], None]] = on_output
+        # Runs under the parse lock right after a chunk is parsed, so the
+        # callback's view of "what has been parsed" is exact. Used where a
+        # recording must stay consistent with snapshots of the grid.
+        self.on_parsed: Optional[Callable[[bytes], None]] = on_parsed
 
         self._running = False
         self._reader_thread: Optional[threading.Thread] = None
-        self._raw_output_buffer = bytearray()
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._pending_replies: List[bytes] = []
+
+    def _answer_query(self, text: str) -> None:
+        # Called by the parser under the parse lock: only queue here.
+        self._pending_replies.append(text.encode("utf-8"))
+
+    def _flush_replies(self) -> None:
+        """Send queued query replies without blocking the reader thread."""
+        if not self._pending_replies or self.master_fd is None:
+            return
+        if not self._write_lock.acquire(blocking=False):
+            return  # a paste is in progress; try again after the next read
+        try:
+            while self._pending_replies:
+                data = self._pending_replies[0]
+                try:
+                    written = os.write(self.master_fd, data)
+                except (BlockingIOError, InterruptedError):
+                    return
+                except OSError:
+                    self._pending_replies.clear()
+                    return
+                if written < len(data):
+                    self._pending_replies[0] = data[written:]
+                    return
+                self._pending_replies.pop(0)
+        finally:
+            self._write_lock.release()
+
+    def _write_all(self, data: bytes, timeout: float = 10.0) -> None:
+        """
+        Write every byte to the non-blocking master.
+
+        A large paste fills the PTY input buffer (a few KB); the write then
+        returns short or raises EAGAIN. Wait for the program to drain it
+        instead of dropping the rest.
+        """
+        if self.master_fd is None:
+            raise RuntimeError("PTY supervisor is not running.")
+        view = memoryview(data)
+        deadline = time.monotonic() + timeout
+        with self._write_lock:
+            while view:
+                fd = self.master_fd
+                if fd is None:
+                    raise RuntimeError("PTY closed while writing.")
+                try:
+                    written = os.write(fd, view)
+                except (BlockingIOError, InterruptedError):
+                    written = 0
+                if written:
+                    view = view[written:]
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"PTY input stayed full for {timeout:.0f}s; "
+                        f"{len(view)} of {len(data)} bytes not delivered"
+                    )
+                select.select([], [fd], [], min(remaining, 0.1))
 
     def _set_winsize(self, fd: int, rows: int, cols: int):
         """Set terminal geometry using ioctl TIOCSWINSZ."""
@@ -199,6 +332,7 @@ class PtySupervisor(BaseSupervisor):
         """
         while self._running and self.master_fd is not None:
             try:
+                self._flush_replies()
                 r, _, _ = select.select([self.master_fd], [], [], 0.05)
                 if self.master_fd in r:
                     chunk = os.read(self.master_fd, 8192)
@@ -214,8 +348,13 @@ class PtySupervisor(BaseSupervisor):
                         except Exception:
                             pass
                     with self._lock:
-                        self._raw_output_buffer.extend(chunk)
                         self.parser.feed(chunk)
+                        parsed_hook = self.on_parsed
+                        if parsed_hook is not None:
+                            try:
+                                parsed_hook(chunk)
+                            except Exception:
+                                pass
             except (OSError, ValueError):
                 break
 
@@ -225,10 +364,10 @@ class PtySupervisor(BaseSupervisor):
             raise RuntimeError("PTY supervisor is not running.")
         if delay_per_char > 0:
             for ch in text:
-                os.write(self.master_fd, ch.encode("utf-8"))
+                self._write_all(ch.encode("utf-8"))
                 time.sleep(delay_per_char)
         else:
-            os.write(self.master_fd, text.encode("utf-8"))
+            self._write_all(text.encode("utf-8"))
 
     def send_input(self, text: str, delay_per_char: float = 0.0) -> None:
         """Inject input characters (alias for send_text)."""
@@ -236,17 +375,27 @@ class PtySupervisor(BaseSupervisor):
 
     def send_key(self, key_name: str) -> None:
         """Send mapped key code sequence."""
-        seq = KeyMap.to_pty(key_name)
+        seq = KeyMap.to_pty(key_name, app_cursor=bool(getattr(self.state, "app_cursor_keys", False)))
         self.send_text(seq)
 
     def send_raw(self, data: bytes) -> None:
         """Send raw bytes directly."""
         if self._running and self.master_fd is not None:
-            os.write(self.master_fd, data)
+            self._write_all(data)
 
     def paste_text(self, text: str) -> None:
-        """Bracketed paste mode."""
-        self.send_text(f"\x1b[200~{text}\x1b[201~")
+        """
+        Paste a block of text. Wrapped in bracketed-paste markers only when
+        the application has enabled mode 2004, like a real terminal; an app
+        that never asked for it would otherwise receive literal ``[200~``.
+        Line breaks are sent as CR, as xterm and tmux ``paste-buffer`` do
+        (the tty's ICRNL turns them back into LF for cooked-mode readers).
+        """
+        text = text.replace("\r\n", "\r").replace("\n", "\r")
+        if getattr(self.state, "bracketed_paste", False):
+            self.send_text(f"\x1b[200~{text}\x1b[201~")
+        else:
+            self.send_text(text)
 
     def capture_ansi(self) -> str:
         """Capture screen as ANSI text."""
@@ -256,6 +405,15 @@ class PtySupervisor(BaseSupervisor):
         """Capture rendered plain screen text."""
         with self._lock:
             return self.state.get_rendered_text()
+
+    def capture_prompt_view(self):
+        """Screen text, cursor row and scroll count, read atomically."""
+        with self._lock:
+            return (
+                self.state.get_rendered_text(),
+                self.state.cursor_row,
+                self.state.lines_scrolled,
+            )
 
     def get_screen(self) -> str:
         """Extract live plain screen text."""
@@ -297,16 +455,17 @@ class PtySupervisor(BaseSupervisor):
 
     def terminate(self) -> None:
         """
-        Clean up child process and close PTY descriptors.
+        Clean up the child, everything else in its session, and the PTY.
 
-        Note: a background job started inside the recorded shell (``sleep 600 &``)
-        is *not* reaped. Now that the child owns a controlling terminal it has
-        job control, so each job lives in its own process group and killpg on
-        the shell's group does not reach it. Measured against bash 5.3: SIGHUP
-        to the session, closing the master first, and both together all leave
-        the job running, so there is no cheap remedy here.
+        The child is a session leader (setsid in the pre-exec hook), so its
+        pid is the session id. A background job started inside the recorded
+        shell (``sleep 600 &``) lives in its own process group under job
+        control, so killpg on the shell's group misses it; it is found by
+        session id instead. A process that called setsid() itself (a real
+        daemon) has left the session and is not touched.
         """
         self._running = False
+        sid = self.process.pid if self.process else None
         if self.process and self.process.poll() is None:
             try:
                 pgid = os.getpgid(self.process.pid)
@@ -318,6 +477,8 @@ class PtySupervisor(BaseSupervisor):
                     self.process.wait(timeout=1.0)
                 except Exception:
                     pass
+        if sid is not None:
+            _kill_session(sid)
 
 
         if self.master_fd is not None:

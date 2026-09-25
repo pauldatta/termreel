@@ -70,6 +70,16 @@ class TranscoderError(TermReelError):
     pass
 
 
+class MaskConfigError(TermReelError, ValueError):
+    """
+    Raised when a masking configuration cannot be read.
+
+    Masking fails closed: a malformed ~/.termreel/config.yaml used to be read
+    as "no rules", which recorded every secret those rules were meant to hide.
+    """
+    pass
+
+
 class FFmpegDeadlockError(TranscoderError):
     """Raised when FFmpeg process hangs or pipe deadlocks."""
     pass

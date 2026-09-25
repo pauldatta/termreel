@@ -12,6 +12,27 @@ from typing import Any, Dict, List, Optional
 from termreel.telemetry.models import SessionMetadata
 
 
+def _ensure_private_dir(path: str, strict: bool = False) -> None:
+    """
+    Make sure ``path`` is a real directory owned by the current user with
+    mode 0700. With ``strict=True`` anything else raises PermissionError
+    (used for the /tmp fallback, where another user could have created it).
+    """
+    st = os.lstat(path) if strict else os.stat(path)
+    import stat as _stat
+    getuid = getattr(os, "getuid", None)
+    if not _stat.S_ISDIR(st.st_mode):
+        raise PermissionError(f"{path} is not a directory (symlink or file); refusing to use it")
+    if getuid is not None and st.st_uid != getuid():
+        raise PermissionError(f"{path} is owned by uid {st.st_uid}, not you; refusing to use it")
+    if _stat.S_IMODE(st.st_mode) != 0o700:
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            if strict:
+                raise PermissionError(f"cannot make {path} private (mode {oct(_stat.S_IMODE(st.st_mode))})")
+
+
 class SessionRegistry:
     """
     Manages session metadata files on the local filesystem.
@@ -27,9 +48,19 @@ class SessionRegistry:
             try:
                 os.makedirs(default_dir, mode=0o700, exist_ok=True)
                 self.directory = default_dir
+                _ensure_private_dir(default_dir)
             except OSError:
-                fallback_dir = "/tmp/termreel_sessions"
-                os.makedirs(fallback_dir, mode=0o700, exist_ok=True)
+                # Per-user name, and verified below: a shared, predictable
+                # /tmp path could be pre-created (or symlinked) by another
+                # user to collect session metadata and screen contents.
+                getuid = getattr(os, "getuid", None)
+                suffix = str(getuid()) if getuid else "user"
+                fallback_dir = f"/tmp/termreel_sessions-{suffix}"
+                try:
+                    os.mkdir(fallback_dir, 0o700)
+                except FileExistsError:
+                    pass
+                _ensure_private_dir(fallback_dir, strict=True)
                 self.directory = fallback_dir
 
     def _session_file(self, session_id: str) -> str:

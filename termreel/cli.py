@@ -16,7 +16,7 @@ from termreel.renderer.themes import list_themes, get_theme
 from termreel.utils.asciicast import AsciicastPlayer
 from termreel.emulator.state import TerminalState
 from termreel.emulator.parser import ANSIParser
-from termreel.renderer.cairo_renderer import CairoTerminalRenderer
+from termreel.renderer.cairo_renderer import CairoTerminalRenderer, pixels_for_grid
 from termreel.transcoder.ffmpeg_pipe import FFmpegPipe
 from termreel.transcoder.gif_encoder import GifEncoder
 from termreel.generator.explorer import CLIExplorer
@@ -204,6 +204,11 @@ def cmd_record(args: argparse.Namespace) -> int:
             verbose=not args.quiet,
         )
         report = runner.run()
+        if report.injections:
+            print(f"⌨️  Screen triggers typed into the session {len(report.injections)} time(s): "
+                  + ", ".join(f"{i['trigger']}={'+'.join(i['keys'])}" for i in report.injections))
+        for err in report.teardown_errors:
+            print(f"⚠️  {err}", file=sys.stderr)
         if report.status == "pass":
             print(f"✨ Successfully generated: {report.output_file}")
             if report.conversation_id:
@@ -260,16 +265,21 @@ def cmd_cast2video(args: argparse.Namespace) -> int:
         return 1
 
     player = AsciicastPlayer(args.cast_file)
+    # The replay grid must be the size the cast was recorded at, otherwise
+    # cursor addressing and wrapping land in the wrong place.
+    cast_cols = max(10, int(player.width or 80))
+    cast_rows = max(5, int(player.height or 24))
+    width, height = pixels_for_grid(cast_cols, cast_rows)
     renderer = CairoTerminalRenderer(
-        width=1280,
-        height=720,
+        width=width,
+        height=height,
         title=args.title,
         subtitle=f"{player.width}x{player.height} Cast",
         theme=args.theme,
     )
     state = TerminalState(
-        rows=renderer.rows,
-        cols=renderer.cols,
+        rows=cast_rows,
+        cols=cast_cols,
         default_fg=renderer.theme.default_fg,
         default_bg=renderer.theme.terminal_bg,
         palette=renderer.theme.palette,
@@ -277,7 +287,7 @@ def cmd_cast2video(args: argparse.Namespace) -> int:
     parser = ANSIParser(state)
     redactor = MaskEngine.create(load_global=True, config_path=getattr(args, "config", None))
 
-    pipe = FFmpegPipe(output_file=args.output, width=1280, height=720, fps=args.fps)
+    pipe = FFmpegPipe(output_file=args.output, width=width, height=height, fps=args.fps)
     pipe.open()
     print(f"Rendering {args.cast_file} ({len(player.events)} events, duration {player.duration:.1f}s) -> {args.output}")
 
@@ -298,9 +308,8 @@ def cmd_cast2video(args: argparse.Namespace) -> int:
                 parser.feed(ev_data)
             event_idx += 1
 
-        redactor.apply_to_terminal_state(state)
         frame_bytes = renderer.draw_frame(
-            state,
+            redactor.redacted_snapshot(state),
             status_left=f"{args.title} | {current_sim_time:.1f}s / {player.duration / speed:.1f}s",
             status_right="TermReel Cast Replay",
         )

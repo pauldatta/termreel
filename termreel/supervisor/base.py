@@ -69,6 +69,15 @@ class BaseSupervisor(ABC):
         """Capture rendered plain screen text (alias for capture_plain)."""
         return self.capture_plain()
 
+    def capture_prompt_view(self):
+        """
+        Return ``(screen_text, cursor_row, lines_scrolled)`` for edge-triggered
+        prompt detection. ``screen_text`` has one line per screen row starting
+        at row 0. ``cursor_row`` is None when unknown. ``lines_scrolled`` is a
+        monotonic count of rows scrolled off the top (0 when unknown).
+        """
+        return self.capture_plain(), None, 0
+
     def wait_for_output(self, pattern: object, timeout: float = 5.0, interval: float = 0.05) -> bool:
         """Wait until pattern appears in rendered screen text or timeout expires."""
         import time

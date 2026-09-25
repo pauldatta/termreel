@@ -288,7 +288,7 @@ with FFmpegPipe("output/custom.mp4", width=1280, height=720, fps=30) as pipe:
 When recording interactive sessions with `agy`:
 
 1. **Workspace Trust Prompts:** `agy` prompts `Do you trust the contents of this project?` on initial launch in new folders. TermReel triggers auto-detect this prompt and inject `Enter`.
-2. **Permissions:** Use `--dangerously-skip-permissions` or register auto-approval triggers (`Approve change? [y/N]` -> `y` + `Enter`).
+2. **Permissions:** Use `--dangerously-skip-permissions`, the hook policy below, or opt in to on-screen dialog answering with `environment.auto_approve_dialogs: true` (alias `auto_approve`). That flag is **off by default**. When on, it registers edge-triggered handlers: one `Enter` per permission dialog and one `y` + `Enter` per `[y/N]` prompt line that is still waiting for input. Every injected key is listed at the end of the run and in `ScenarioReport.injections`. For your own triggers, set `edge: presence` (dialogs) or `edge: line` (line prompts). Without `edge`, a trigger re-fires every `cooldown` seconds while its text stays on screen.
 3. **Model Latency Handling:** Always use `wait_for_idle` instead of hardcoded sleeps. TermReel monitors the PTY buffer for busy spinners (`⡿ Generating...`, `⠋ Thinking...`) and proceeds only when the `? for shortcuts` idle prompt returns.
 
 ---
@@ -306,7 +306,7 @@ Antigravity CLI supports declarative lifecycle hooks defined in `<workspace>/.ag
 ```yaml
 environment:
   agy_hooks: true          # Automatically deploy .agents/hooks.json and hook script
-  agy_auto_approve: true   # Auto-approve PreToolUse tool invocations
+  agy_auto_approve: true   # Hook policy: allow PreToolUse tool invocations (does not answer on-screen dialogs)
   agy_event_bridge: true   # Stream lifecycle events into TermReel event bus
   agy_custom_policy:       # Optional granular allow/deny tool overrides
     dangerous_tool: deny

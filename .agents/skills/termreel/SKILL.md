@@ -147,7 +147,9 @@ Dynamically update it during execution with `set_statusbar`:
 
 ### 6. Always Redact Secrets and Tokens
 
-Built-in redactors automatically mask Google API keys, OAuth tokens (`ya29...`), GitHub PATs (`ghp_...`), AWS keys (`AKIA...`), and JWTs.
+Built-in redactors mask Google OAuth tokens (`ya29.`) and API keys (`AIza`), GitHub tokens (`ghp_`, `github_pat_`, `gho_`/`ghu_`/`ghs_`/`ghr_`), Anthropic (`sk-ant-`) and OpenAI (`sk-proj-`, `sk-svcacct-`, `sk-admin-`, `sk-`) keys, Stripe `sk_`/`rk_` live/test keys, Slack `xox?-` tokens, GitLab `glpat-`, AWS `AKIA` key IDs, JWTs, `Bearer` headers, and `-----BEGIN ... PRIVATE KEY-----` lines. A token that wraps across screen rows is still matched.
+
+Masking fails closed. An invalid regex in `mask.patterns` or `redactions`, or an anchor whose `before`/`after` cannot be compiled, is rejected when the manifest is validated (`ScenarioValidationError`). A broken `~/.termreel/config.yaml` raises `MaskConfigError`. Recording never starts with a mask rule silently dropped.
 
 For environment-specific secrets, project identifiers, and hostnames, use **Screen Masking and Value Substitution** under `mask:` or `redactions:`:
 
@@ -215,7 +217,9 @@ Scenario-specific rules override global rules on key collision.
 > **Identifier-shaped secrets cannot be caught by pattern matching.** GCP project IDs, usernames, hostnames, and internal service names are just kebab-case words — any regex broad enough to match `my-gcp-project-2026` will also destroy `us-central1-a` and `docs-site-config`. You **must** list these under `values` or `anchors`.
 
 > [!NOTE]
-> **`.cast` exports are redacted with the same rules as the video.** Asciinema events pass through the MaskEngine before writing, so `.cast` files match the substituted video without secret leaks.
+> **`.cast` exports are redacted with the same rules as the video.** The cast writer redacts the output stream, not each read on its own. A secret split across two PTY reads or broken up by colour codes (SGR) is still caught. To do that it holds back a possible partial match at the end of a chunk, for at most 0.25 s of idle time. One limit remains: text that trickles out slower than that, such as a token typed one character at a time with pauses over 0.25 s, can land in the cast in pieces the pattern no longer matches. Run `termreel mask --verify` on the cast before publishing.
+>
+> Telemetry follows the same rules. The session directory is created `0700` and its files `0600`. `GET_SCREEN`, `GET_RAW` and `screen.ansi` return masked text.
 
 #### 5. Verification & Typo Protection
 Run mask verification before publishing. Typo protection warns when a configured rule has 0 matches, and `--strict` fails CI:
@@ -259,9 +263,11 @@ environment:
     - "git config user.email 'pkdatta2000@gmail.com'"
     - "echo 'def run(): pass' > main.py"
     - "git add . && git commit -m 'Initial commit'"
+  auto_approve_dialogs: true      # opt-in (default false): built-in permission + [y/N] handlers
 
+# Written to .agents/settings.json for agy. allow_commands/allow_tools are aliases of
+# allowed_commands/allowed_tools. There is no permissions.auto_approve switch; it is ignored.
 permissions:
-  auto_approve: true
   allow_commands: ["python3", "pytest", "git"]
   allow_tools: ["run_command", "write_to_file", "read_file"]
 
@@ -269,14 +275,14 @@ triggers:
   - on_match: "Do you trust the contents of this project\\?|Yes, I trust"
     action: "Enter"
     once: true
-  - on_match: "Requesting permission for:|Do you want to proceed\\?|\\[y/N\\]"
+  - on_match: "Requesting permission for:|Do you want to proceed\\?"
     action:
       type: "send_key"
       value: "Enter"
       delay_before: 0.8
       delay_after: 0.3
     once: false
-    cooldown: 1.5
+    edge: presence                # one Enter per dialog (see "Trigger edge" below)
     max_firings: 15
 
 timeline:
@@ -331,6 +337,18 @@ timeline:
       title: "Verification Succeeded"
       duration: 2.0
 ```
+
+**Manifest rules worth knowing:**
+- **Strict keys.** When a manifest is loaded from YAML (`termreel run`, `termreel validate`), an unknown key in `metadata`, `environment`, a trigger or a step fails with a suggestion (`Unknown key 'auto_aprove_dialogs' in 'environment'. Did you mean 'auto_approve_dialogs'?`), instead of being ignored.
+- **Keys and regexes are checked up front.** A bad key name in `send_key`, or an invalid regex in a trigger or mask rule, fails `termreel validate` and aborts before anything is recorded.
+- **Dialog answering is opt-in.** `environment.auto_approve_dialogs` (alias `auto_approve`) defaults to `false`. `agy_auto_approve` controls only the agy PreToolUse hook policy.
+- **Trigger `edge`.**
+  - `presence`: fire once when the pattern appears. Re-arm when it leaves the screen, or when a new match appears on a lower line than the answered one after the answer was sent (the next dialog printed under an answered one in scrolling output). A dialog that stays up because the key did not dismiss it is not answered again. Not handled: a dialog replaced in place by a different one at the same rows with no frame in between where the pattern is gone.
+  - `line`: fire once per prompt still waiting for input. The match must be on the cursor row or the last non-blank line, with only whitespace/punctuation after it. An answered prompt that stays visible is not answered again, and a new identical prompt on a later line (or after the screen scrolls) is.
+  - Omitted, `none` or `level`: the trigger re-fires every `cooldown` seconds while the text is visible.
+
+  Everything any trigger typed is printed at the end of the run and returned in `ScenarioReport.injections`.
+- **Outputs are atomic.** Video is written to `<name>.partial.<ext>` (for example `demo.partial.mp4`) and renamed on success. Odd canvas sizes are padded evenly to the even size H.264 needs, not cropped.
 
 ---
 
@@ -494,9 +512,10 @@ A live run registers with the telemetry socket like any other session, so `termr
 
 - Requires an interactive tty on stdin. It exits with an error under a pipe or in CI.
 - The canvas is locked at startup, but the recorded shell follows the window: a mid-session resize is passed through to the child, clamped to the locked grid. Shrinking letterboxes; growing past it warns once and the extra area is not captured.
-- Prefer `.mp4`. A `.gif` target buffers the whole stream through a palette filtergraph, so nothing lands on disk until the run stops.
+- Prefer `.mp4`. A `.gif` target is encoded in two passes: frames stream losslessly to a temporary file, and the palette and GIF are built when the run stops, so the GIF appears only at the end (and that step takes a while for long runs). GIFs are capped at 15 fps and 960 px wide. Every output is written to `<name>.partial.<ext>` and renamed only after ffmpeg succeeds, so a failed encode never leaves a truncated file under the real name.
 - Above roughly 1920x1080 the renderer warns: frame production alone eats a large share of the frame budget and the encoder may push back. Pick a smaller grid with `--cols` / `--rows`.
-- `^T q` is the ordinary way out, since raw mode leaves TermReel without its own Ctrl-C. `SIGTERM` / `SIGHUP` also stop it cleanly — video finalised, `.cast` flushed, recorded shell terminated, terminal restored. A second signal force-exits. Background jobs started inside the recorded shell keep running, exactly as they do after a normal stop.
+- `^T q` is the ordinary way out, since raw mode leaves TermReel without its own Ctrl-C. `SIGTERM` / `SIGHUP` also stop it cleanly — video finalised, `.cast` flushed, recorded shell terminated, terminal restored. A second signal force-exits. However the recording stops (`^T q`, a signal, or the shell exiting), TermReel then kills the other processes in the recorded shell's session (background jobs such as `sleep 999 &`): `SIGTERM`, then `SIGKILL` after 1 s. Processes that called `setsid` (daemons, `nohup setsid ...`) left that session and keep running.
+- While paused, output still reaches the screen but is left out of the `.cast` too. On resume the cast gets a full redraw of the current screen, so replaying the cast matches what the video shows.
 
 ---
 
@@ -555,6 +574,7 @@ Catches broken states (Python exceptions, syntax errors, failed test suites) imm
 
 ### 4. Multi-Pane Tmux Layouts (`split_pane`, `select_pane`, `close_pane`)
 Enables split-screen layouts (e.g. agent pairing on the left, live logs or sidecar streaming on the right). Requires `--backend tmux`.
+The tmux backend runs its own private tmux server (`tmux -L <socket>` with a minimal generated config). Your `~/.tmux.conf` and an enclosing `$TMUX` do not affect it, and stopping a recording kills only that private server. Every visible pane goes into the video, composited with pane borders, and the cursor is drawn where tmux reports it. Pane numbers in `select_pane` / `close_pane` are tmux pane indexes (`#{pane_index}`, 0 = the original pane).
 ```yaml
 - launch: "bash"
 - run_shell: "echo 'Main console ready'"
@@ -583,7 +603,14 @@ Use dictionaries when you need precise pauses around control keys:
     key: "Escape"
     delay_before: 0.5
     pause_after: 1.0
+- send_keys: ["C-r", "M-f", "Enter"]  # presses each key in order
 ```
+Both backends share one key vocabulary (case-insensitive):
+- Named keys: `Enter`, `Escape`, `Tab`, `Backspace`, `Space`, arrows, `Home`, `End`, `PageUp`/`PageDown`, `Insert`, `Delete`, `F1`–`F12`.
+- Modifiers: `C-r` / `ctrl+r` / `^R`, `M-f` / `alt+f`, `S-Tab` / `shift+tab` / `BTab`, `ctrl+left`, and Ctrl punctuation such as `C-]`.
+- A raw byte (`0x14`), any single printable character, or `none`.
+
+An unknown key or a combination with no standard encoding (such as `C-Enter`) raises `KeySpecError`. Manifests are checked when validated, so the key is never typed into the session as literal text. With `--backend tmux`, tmux sends `Home`/`End` as `\e[1~`/`\e[4~`, not the `\e[H`/`\e[F` the PTY backend uses.
 
 ### 6. TUI Modal Inspection (`inspect_modal`)
 Cleanly demo popup dialogs (`/context`, `/stats`, `/diff`, `/agents`):
@@ -602,7 +629,7 @@ Prevent keystroke collisions with shell initialization prompts:
 - launch:
     command: "bash"
     wait_for_prompt: true
-    prompt_pattern: "([$#>]\s*$|%\s*$)"
+    prompt_pattern: '([$#>]\s*$|%\s*$)'
 ```
 
 ### 8. Soft Newline Collapsing
@@ -614,18 +641,20 @@ TermReel automatically collapses YAML multiline string wraps into single spaces 
 
 TermReel includes an accelerated parallel test runner auto-scaling up to 16 workers:
 ```bash
-# 1. Fast mode: runs 375 tests in ~13-15 seconds (skips heavy 65s interactive E2E suite)
+# 1. Fast mode: 410 tests in about 60 s with 8 workers (skips tests whose names
+#    contain "slow" or "pure_interactive", including the 65 s agy E2E test)
 python3 -m termreel.cli test -f
 
 # 2. Filter mode: run specific test cases matching a pattern
 python3 -m termreel.cli test -k test_edit_file
 
-# 3. Full suite: runs all 377 unit, system, and interactive CLI tests
-python3 -m termreel.cli test
+# 3. Full suite: all 433 tests, about 85 s with 8 workers
+python3 -m termreel.cli test -w 8
 ```
+Many tests compare TermReel against a real tmux and a real PTY (emulator differential and fuzz, auto-approve, paste, DSR, cast replay), so `tmux` and `ffmpeg` must be installed. The fuzz seed count is set by `TERMREEL_FUZZ_SEEDS`.
 
 > [!IMPORTANT]
 > **Python Environment Note**:
-> `.venv/bin/python` lacks PyCairo system bindings. Always run TermReel and its test suite using system `python3` (or the standalone `termreel` binary).
+> The renderer needs PyCairo (system package `python3-cairo`, or `pip install pycairo` with `libcairo2-dev`), and the YAML schema uses pydantic when it is installed. A venv built with `--system-site-packages` on top of a system Python that has PyCairo works. CI (`.github/workflows/ci.yml`) installs `ffmpeg tmux libcairo2-dev` and runs `termreel test -w 8`.
 
 

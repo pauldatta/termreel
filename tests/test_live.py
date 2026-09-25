@@ -689,11 +689,13 @@ class TestSinglePtyReader(unittest.TestCase):
         as printing its output, so the same text legitimately appears twice.
         """
         mirrored = bytearray()
+        parsed = bytearray()
         supervisor = PtySupervisor(
             command="bash --norc --noprofile",
             rows=24,
             cols=80,
             on_output=mirrored.extend,
+            on_parsed=parsed.extend,
         )
         try:
             supervisor.start()
@@ -704,7 +706,7 @@ class TestSinglePtyReader(unittest.TestCase):
             time.sleep(0.4)
 
             with supervisor._lock:
-                parsed_bytes = bytes(supervisor._raw_output_buffer)
+                parsed_bytes = bytes(parsed)
             mirror_bytes = bytes(mirrored)
 
             self.assertTrue(parsed_bytes, "the parser consumed nothing")
@@ -1156,6 +1158,43 @@ class TestLiveRecordingEndToEnd(unittest.TestCase):
 
         payload = "".join(event[2] for event in events)
         self.assertIn("AFTER_PAUSE", payload)
+
+    def test_output_while_paused_is_not_in_the_cast_and_replay_matches_screen(self):
+        from termreel.emulator.parser import ANSIParser
+        from termreel.emulator.state import TerminalState
+
+        cast_path = os.path.join(self.workdir, "paused.cast")
+        recorder = self._recorder(cast=cast_path)
+
+        def script(send):
+            time.sleep(1.0)
+            # The typed line does not contain the marker; only its output
+            # does, and that output happens while recording is paused. The
+            # screen is cleared before resume, so the resume redraw cannot
+            # legitimately contain it either.
+            send(b"sleep 1.2; echo PM_$((6*7)); sleep 0.4; clear\r")
+            time.sleep(0.2)
+            send(b"\x14p")
+            time.sleep(2.6)
+            self.assertTrue(recorder.paused)
+            send(b"\x14p")
+            time.sleep(0.3)
+            send(b"echo AFTER_RESUME_$((5*5))\r")
+            time.sleep(1.2)
+
+        report = self._run(recorder, script)
+        self.assertEqual(report.status, "pass", report.error_message)
+
+        with open(cast_path, "r", encoding="utf-8") as handle:
+            lines = [line for line in handle.read().splitlines() if line.strip()]
+        events = [json.loads(line) for line in lines[1:]]
+        payload = "".join(e[2] for e in events if e[1] == "o")
+        self.assertNotIn("PM_42", payload, "output produced while paused leaked into the cast")
+        self.assertIn("AFTER_RESUME_25", payload)
+
+        replay = TerminalState(rows=16, cols=60)
+        ANSIParser(replay).feed(payload.encode("utf-8"))
+        self.assertEqual(replay.get_rendered_text(), recorder.state.get_rendered_text())
 
     def test_socket_pause_resume_and_stop(self):
         import socket

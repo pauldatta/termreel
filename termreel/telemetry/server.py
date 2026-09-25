@@ -33,11 +33,17 @@ class TelemetryServer:
         registry: Optional[SessionRegistry] = None,
         session_dir: Optional[str] = None,
         controller: Optional[Any] = None,
+        redactor: Optional[Any] = None,
     ):
         self.session_id = session_id
         self.state = state
         self.renderer = renderer
         self.registry = registry if registry is not None else SessionRegistry()
+        # Anything served over the socket or written to the fallback files
+        # goes through the same masking as the video. The live grid is never
+        # masked in place, so without this peek/screen.ansi would show
+        # unmasked secrets.
+        self.redactor = redactor
 
         # Optional recording controller exposing pause/resume/toggle_pause/stop.
         # Present for live recordings, absent for scripted scenario runs.
@@ -51,15 +57,22 @@ class TelemetryServer:
                 pid=os.getpid(),
             )
 
-        # Resolve session directory
+        # Resolve session directory. The socket may live in /tmp when the
+        # per-session path is too long for AF_UNIX; the screen and status
+        # files must still go to the private per-session directory, never
+        # to the socket's directory in that case.
         if session_dir:
             self.session_dir = os.path.abspath(session_dir)
-        elif self.metadata.socket_path:
+        elif self.metadata.socket_path and os.path.basename(self.metadata.socket_path) == "telemetry.sock":
             self.session_dir = os.path.dirname(os.path.abspath(self.metadata.socket_path))
         else:
             self.session_dir = os.path.join(self.registry.directory, self.session_id)
 
-        os.makedirs(self.session_dir, exist_ok=True)
+        os.makedirs(self.session_dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(self.session_dir, 0o700)
+        except OSError:
+            pass
 
         # Resolve socket path (ensure within UNIX domain socket length limit)
         if not self.metadata.socket_path:
@@ -121,6 +134,28 @@ class TelemetryServer:
         # Write initial fallback files
         self.write_fallback_files()
 
+    def _view(self) -> TerminalState:
+        """The screen as clients may see it: masked if a redactor is set."""
+        if self.redactor is not None:
+            return self.redactor.redacted_snapshot(self.state)
+        return self.state
+
+    @staticmethod
+    def _write_private(path: str, text: str) -> None:
+        """Atomically write ``text`` to ``path`` with mode 0600."""
+        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        os.replace(tmp, path)
+
     def write_fallback_files(self) -> None:
         """
         Atomically write screen.ansi and status.json fallback files in session dir.
@@ -130,23 +165,13 @@ class TelemetryServer:
             with self._lock:
                 status_dict = self.metadata.to_dict()
 
-            snap = ScreenSnapshot.from_terminal_state(self.state)
+            snap = ScreenSnapshot.from_terminal_state(self._view())
 
-            # 1. status.json
-            status_path = os.path.join(self.session_dir, "status.json")
-            tmp_status = f"{status_path}.tmp.{os.getpid()}.{threading.get_ident()}"
-            with open(tmp_status, "w", encoding="utf-8") as f:
-                json.dump(status_dict, f, indent=2)
-            os.replace(tmp_status, status_path)
+            self._write_private(os.path.join(self.session_dir, "status.json"),
+                                json.dumps(status_dict, indent=2))
+            self._write_private(os.path.join(self.session_dir, "screen.ansi"),
+                                snap.ansi_text)
 
-            # 2. screen.ansi
-            ansi_path = os.path.join(self.session_dir, "screen.ansi")
-            tmp_ansi = f"{ansi_path}.tmp.{os.getpid()}.{threading.get_ident()}"
-            with open(tmp_ansi, "w", encoding="utf-8") as f:
-                f.write(snap.ansi_text)
-            os.replace(tmp_ansi, ansi_path)
-
-            # 3. Update registry
             if self.registry:
                 self.registry.update(self.session_id, **status_dict)
         except Exception:
@@ -247,15 +272,14 @@ class TelemetryServer:
             return True
 
         elif method in ("GET_SCREEN", "SCREEN"):
-            snap = ScreenSnapshot.from_terminal_state(self.state)
+            snap = ScreenSnapshot.from_terminal_state(self._view())
             res = snap.to_dict()
             resp = {"jsonrpc": "2.0", "result": res, "id": req_id}
             client_sock.sendall((json.dumps(resp) + "\n").encode("utf-8"))
             return True
 
         elif method in ("GET_RAW", "RAW"):
-            with getattr(self.state, "_lock", threading.Lock()):
-                raw_text = self.state.get_rendered_text(strip_trailing=False)
+            raw_text = self.get_raw()
             resp = {
                 "jsonrpc": "2.0",
                 "result": raw_text,
@@ -271,7 +295,7 @@ class TelemetryServer:
             fps = max(1.0, min(fps, 30.0))
             interval = 1.0 / fps
 
-            init_snap = ScreenSnapshot.from_terminal_state(self.state)
+            init_snap = ScreenSnapshot.from_terminal_state(self._view())
             conf = {
                 "jsonrpc": "2.0",
                 "method": "subscription",
@@ -289,7 +313,7 @@ class TelemetryServer:
                 if not self._running or self._stop_event.is_set():
                     break
 
-                snap = ScreenSnapshot.from_terminal_state(self.state)
+                snap = ScreenSnapshot.from_terminal_state(self._view())
                 stream_msg = {
                     "jsonrpc": "2.0",
                     "method": "screen_snapshot",
@@ -314,7 +338,7 @@ class TelemetryServer:
 
             dest_path = params.get("path") or params.get("file") or params.get("output")
             with self._lock:
-                self.renderer.draw_frame(self.state)
+                self.renderer.draw_frame(self._view())
                 buf = io.BytesIO()
                 self.renderer.surface.write_to_png(buf)
                 png_bytes = buf.getvalue()
@@ -431,19 +455,20 @@ class TelemetryServer:
 
     def get_screen(self) -> ScreenSnapshot:
         """Retrieve a point-in-time ScreenSnapshot."""
-        return ScreenSnapshot.from_terminal_state(self.state)
+        return ScreenSnapshot.from_terminal_state(self._view())
 
     def get_raw(self) -> str:
         """Retrieve raw screen text."""
-        with getattr(self.state, "_lock", threading.Lock()):
-            return self.state.get_rendered_text(strip_trailing=False)
+        view = self._view()
+        with getattr(view, "_lock", threading.Lock()):
+            return view.get_rendered_text(strip_trailing=False)
 
     def capture_image(self, path: Optional[str] = None) -> bytes:
         """Render and export PNG frame directly."""
         if self.renderer is None:
             raise RuntimeError("Renderer is not available")
         with self._lock:
-            self.renderer.draw_frame(self.state)
+            self.renderer.draw_frame(self._view())
             buf = io.BytesIO()
             self.renderer.surface.write_to_png(buf)
             data = buf.getvalue()

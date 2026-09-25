@@ -53,22 +53,38 @@ class TestEmulatorState(unittest.TestCase):
         self.assertEqual(state.get_line_text(0), "ABCDE")
 
     def test_alternate_screen_buffer(self):
-        state = TerminalState(rows=5, cols=10)
-        for ch in "Primary":
-            state.write_char(ch)
-        self.assertTrue(state.contains("Primary"))
+        # The previous version wrote "Alternate" straight after switching and
+        # expected it on one line, i.e. it assumed ?1049h homes the cursor.
+        # Real terminals keep the cursor column, so the text wrapped. This
+        # version uses the byte stream a real program sends and, when tmux
+        # is available, checks each stage against a tmux pane.
+        from termreel.emulator.parser import ANSIParser
+        from tests.tmux_oracle import tmux_available
+        from tests.test_emulator_differential import _compare
 
-        state.switch_to_alt_buffer()
+        stages = [
+            b"Primary",
+            b"Primary\x1b[?1049h",
+            b"Primary\x1b[?1049h\x1b[HAlternate",
+            b"Primary\x1b[?1049h\x1b[HAlternate\x1b[?1049l",
+        ]
+        state = TerminalState(rows=5, cols=10)
+        parser = ANSIParser(state)
+        parser.feed(stages[0])
+        self.assertTrue(state.contains("Primary"))
+        parser.feed(b"\x1b[?1049h")
         self.assertTrue(state.in_alt_buffer)
         self.assertFalse(state.contains("Primary"))
-
-        for ch in "Alternate":
-            state.write_char(ch)
+        self.assertEqual(state.cursor.col, 7)  # cursor column is kept
+        parser.feed(b"\x1b[HAlternate")
         self.assertTrue(state.contains("Alternate"))
-
-        state.switch_to_primary_buffer()
+        parser.feed(b"\x1b[?1049l")
         self.assertFalse(state.in_alt_buffer)
         self.assertTrue(state.contains("Primary"))
+        self.assertFalse(state.contains("Alternate"))
+        if tmux_available():
+            for data in stages:
+                _compare(self, data, cols=10, rows=5, label=f"[{data!r}]")
 
     def test_redaction_application(self):
         secret_sample = "SAMPLE_KEY_" + "9876543210"
